@@ -1,0 +1,42 @@
+# 依赖
+node_modules/
+
+# 敏感文件（包含 API 密钥，绝对不能提交）
+secrets.json
+data.json
+
+# 垃圾文件（误操作产生）
+console.log(h))
+
+# 编译输出（保留 main.js，Obsidian 需要它）
+# main.js 需要提交
+
+# 大文件
+ffmpeg.exe
+*.mp4
+*.mp3
+*.wav
+*.m4a
+*.mov
+
+# 日志
+日志
+
+# 测试笔记（不属于插件代码）
+📝*.md
+
+# 临时文件
+*.tmp
+*.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 测试脚本（可选保留）
+# scripts/test_*

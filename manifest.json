@@ -1,0 +1,9 @@
+{
+	"id": "obsidian-siliconflow-transcriber",
+	"name": "SiliconFlow Transcriber",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "使用硅基流动 API 转写音频附件",
+	"author": "Me",
+	"isDesktopOnly": false
+}
