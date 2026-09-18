@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: asr
+title: ASR 语音转文字模块
+scope:
+    - src/asr.ts
+    - scripts/
+source_files: []
+depends_on: []
+related_to: []

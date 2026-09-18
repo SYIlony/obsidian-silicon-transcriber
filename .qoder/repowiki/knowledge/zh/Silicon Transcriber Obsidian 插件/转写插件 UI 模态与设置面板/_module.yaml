@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: ui_modals
+title: 转写插件 UI 模态与设置面板
+scope:
+    - src/batch-modal.ts
+    - src/search-modal.ts
+    - src/settings-tab.ts
+source_files: []
+depends_on: []
+related_to: []

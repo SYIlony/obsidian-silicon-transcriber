@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: docs_and_plans
+title: 项目文档与开发计划
+scope:
+    - docs/
+    - plans/
+source_files: []
+depends_on: []
+related_to: []

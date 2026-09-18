@@ -1,0 +1,78 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+nodes_managed: true
+exported_at: "2026-08-31T09:19:34Z"
+modules:
+    "":
+        dir_name: Silicon Transcriber Obsidian 插件
+        title: Silicon Transcriber Obsidian 插件
+        scope:
+            - README.md
+            - .gitignore
+            - package.json
+            - manifest.json
+            - main.ts
+            - main.js
+            - esbuild.config.mjs
+            - tsconfig.json
+            - styles.css
+            - data.json
+            - console.log(h))
+            - ffmpeg.exe
+            - package-lock.json
+            - 开发文档.md
+            - 日志
+            - "\U0001F4DD04.第5讲三、凹凸性与拐点的概念04.md"
+        source_files: []
+        children:
+            - asr
+            - docs_and_plans
+            - plugin_core
+            - ui_modals
+        depends_on: []
+        related_to: []
+    asr:
+        dir_name: ASR 语音转文字模块
+        title: ASR 语音转文字模块
+        scope:
+            - src/asr.ts
+            - scripts/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    docs_and_plans:
+        dir_name: 项目文档与开发计划
+        title: 项目文档与开发计划
+        scope:
+            - docs/
+            - plans/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    plugin_core:
+        dir_name: 插件核心配置与类型定义
+        title: 插件核心配置与类型定义
+        scope:
+            - src/index.ts
+            - src/config.ts
+            - src/settings.ts
+            - src/types.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    ui_modals:
+        dir_name: 转写插件 UI 模态与设置面板
+        title: 转写插件 UI 模态与设置面板
+        scope:
+            - src/batch-modal.ts
+            - src/search-modal.ts
+            - src/settings-tab.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
