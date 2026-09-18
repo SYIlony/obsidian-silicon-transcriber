@@ -619,6 +619,7 @@ Authorization: Bearer {LLM_API_KEY}
 |---------|----------|--------|------|
 | `transcribe-v37-stable-fix` | 智能转写 | - | 转写当前视频/音频 |
 | `fuzzy-search-transcription` | 🔍 搜索转写原文 | - | 模糊搜索并跳转 |
+| `partial-mindmap-append` | 🧩 局部思维导图（追加到已有导图） | - | 选取智能笔记分块，生成局部导图并追加到已有导图末尾二级分支之后 |
 
 ### 输出文件说明
 

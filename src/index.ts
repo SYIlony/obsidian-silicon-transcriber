@@ -26,3 +26,6 @@ export * from './llm';
 
 // 批量转写模态框
 export * from './batch-modal';
+
+// 局部思维导图（分块选择 + 追加到已有导图）
+export * from './partial-mindmap';

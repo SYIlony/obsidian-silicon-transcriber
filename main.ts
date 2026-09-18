@@ -48,7 +48,22 @@ import {
     generateTaskReport,
     TaskReportData,
     // 批量转写模态框
-    BatchTranscribeModal
+    BatchTranscribeModal,
+    // 局部思维导图
+    parseNoteChunks,
+    parseChaptersFromMarkdown,
+    formatChunkRangeLabel,
+    detectMindmapFormat,
+    extractRichOutline,
+    extractBasicOutline,
+    appendBranchesToRichMindmap,
+    appendBranchesToBasicMindmap,
+    parseOutlineMarkdown,
+    collectCandidateMindmaps,
+    openPartialMindmapModal,
+    NoteChunk,
+    PartialMindmapSelection,
+    generatePartialMindmapContent
 } from './src';
 
 /**
@@ -102,6 +117,20 @@ interface TaskReport {
     mindmapSuccess: boolean;
     startTime: Date;
     endTime: Date;
+}
+
+/** 读取文件视图（Markdown / MarkMind 等）关联的文件 */
+function viewFileOf(view: unknown): TFile | null {
+    if (view !== null && typeof view === 'object' && 'file' in view) {
+        const f = view.file;
+        return f instanceof TFile ? f : null;
+    }
+    return null;
+}
+
+/** 从 unknown 错误中提取消息文本 */
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -267,6 +296,15 @@ export default class TranscribePlugin extends Plugin {
             name: '🧠 重生成思维导图',
             callback: async () => {
                 await this.regenerateMindmapFromNote();
+            }
+        });
+
+        // 🧩 注册"局部思维导图（追加）"命令
+        this.addCommand({
+            id: 'partial-mindmap-append',
+            name: '🧩 局部思维导图（追加到已有导图）',
+            callback: async () => {
+                await this.generatePartialMindmapFromNote();
             }
         });
 
@@ -2722,6 +2760,154 @@ markmap:
     }
 
     /**
+     * 🧩 局部思维导图：选取智能笔记分块生成分支，追加到已有导图
+     * （流程：选分块 → 自动匹配目标导图并确认 → LLM 生成 → 合并写入）
+     */
+    async generatePartialMindmapFromNote() {
+        const activeLeaf = this.app.workspace.activeLeaf;
+        if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
+            new Notice("❌ 请先打开智能笔记文件，再运行本命令");
+            return;
+        }
+        const noteFile = viewFileOf(activeLeaf.view);
+        if (!noteFile) return;
+
+        let content: string;
+        try {
+            content = await this.app.vault.read(noteFile);
+        } catch (e) {
+            new Notice(`❌ 读取笔记失败: ${errorMessage(e)}`);
+            return;
+        }
+
+        const chunks = parseNoteChunks(content);
+        if (chunks.length === 0) {
+            new Notice("❌ 未找到 %%BATCH_N%% 分块标记，请确认这是智能笔记文件", 6000);
+            return;
+        }
+
+        const { candidates, defaultTarget } = collectCandidateMindmaps(this.app, noteFile);
+        openPartialMindmapModal(this.app, { noteFile, chunks, candidates, defaultTarget }, (selection) => {
+            if (!selection) return; // 用户取消
+            void this.runPartialMindmapGeneration(noteFile, chunks, selection);
+        });
+    }
+
+    /**
+     * 局部思维导图生成与追加的实际流程（弹窗确认后调用）
+     */
+    private async runPartialMindmapGeneration(
+        noteFile: TFile,
+        chunks: NoteChunk[],
+        selection: PartialMindmapSelection
+    ) {
+        const selectedChunks = chunks.filter(c => selection.chunkIndexes.includes(c.index));
+        if (selectedChunks.length === 0) return;
+
+        const selectedText = selectedChunks.map(c => c.text).join('\n\n');
+        const chapters = parseChaptersFromMarkdown(selectedText);
+        if (chapters.length === 0) {
+            new Notice("❌ 所选分块未识别到章节（#### ⏱️ 标题），请换分块重试", 6000);
+            return;
+        }
+
+        const target = selection.target;
+        let targetText: string;
+        try {
+            targetText = await this.app.vault.read(target);
+        } catch (e) {
+            new Notice(`❌ 无法读取目标导图: ${errorMessage(e)}`);
+            return;
+        }
+
+        const format = detectMindmapFormat(targetText);
+        if (format === 'unknown') {
+            new Notice("❌ 目标文件不是可识别的思维导图（rich/basic），请换一个文件", 6000);
+            return;
+        }
+
+        const chunkLabel = formatChunkRangeLabel(selectedChunks);
+        const progress = new Notice(`🧩 [1/3] 生成局部思维导图（${chunkLabel}）…`, 0);
+
+        let branchMarkdown: string;
+        try {
+            const existingOutline = format === 'rich'
+                ? extractRichOutline(targetText)
+                : extractBasicOutline(targetText);
+            branchMarkdown = await generatePartialMindmapContent(chapters, noteFile, existingOutline, chunkLabel);
+        } catch (e) {
+            progress.hide();
+            console.error('[局部思维导图] 生成失败:', e);
+            new Notice(`❌ 生成失败: ${errorMessage(e)}`, 8000);
+            return;
+        }
+
+        progress.setMessage("🧩 [2/3] 合并到导图数据…");
+        let updated: string;
+        let addedCount: number;
+        try {
+            if (format === 'rich') {
+                const branches = parseOutlineMarkdown(branchMarkdown);
+                if (branches.length === 0) throw new Error('模型未输出有效的分支内容');
+                const result = appendBranchesToRichMindmap(targetText, branches);
+                updated = result.updated;
+                addedCount = result.addedCount;
+            } else {
+                const result = appendBranchesToBasicMindmap(targetText, branchMarkdown);
+                updated = result.updated;
+                addedCount = result.addedCount;
+            }
+        } catch (e) {
+            progress.hide();
+            console.error('[局部思维导图] 合并失败:', e);
+            new Notice(`❌ 合并失败: ${errorMessage(e)}`, 8000);
+            return;
+        }
+
+        progress.setMessage("🧩 [3/3] 写入导图文件…");
+        // 关闭目标导图的旧视图：MarkMind 不监听外部文件变更，视图中的陈旧数据可能覆盖写入结果
+        const hadOpenView = this.detachViewsForFile(target, 'mindmapview');
+        if (hadOpenView) await sleep(300);
+
+        try {
+            await safeWriteWithRetry(this.app.vault, target, updated, 3);
+        } catch (e) {
+            progress.hide();
+            console.error('[局部思维导图] 写入失败:', e);
+            new Notice(`❌ 写入失败: ${errorMessage(e)}`, 8000);
+            return;
+        }
+
+        progress.hide();
+        new Notice(`✅ 已追加 ${addedCount} 个节点到「${target.basename}」`, 5000);
+        console.log(`[局部思维导图] 已追加 ${addedCount} 个节点到 ${target.path}`);
+
+        if (hadOpenView) {
+            try {
+                const leaf = this.app.workspace.getLeaf(true);
+                await leaf.openFile(target);
+            } catch (e) {
+                console.warn('[局部思维导图] 重新打开导图视图失败:', e);
+            }
+        }
+    }
+
+    /**
+     * 关闭指定文件的特定类型视图，返回是否有关闭过
+     */
+    private detachViewsForFile(file: TFile, viewType: string): boolean {
+        let detached = false;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (leaf.view.getViewType() !== viewType) return;
+            if (viewFileOf(leaf.view)?.path === file.path) {
+                detached = true;
+                leaf.detach();
+            }
+        });
+        return detached;
+    }
+
+    /**
      * 辅助：从笔记内容查找视频文件
      */
     async findVideoFileFromNote(noteFile: TFile, content: string): Promise<TFile | null> {
@@ -2763,46 +2949,6 @@ markmap:
      * 辅助：解析 Markdown 章节
      */
     parseChaptersFromNote(content: string): ChapterSummary[] {
-        const chapters: ChapterSummary[] = [];
-        const lines = content.split('\n');
-        
-        let currentChapter: Partial<ChapterSummary> | null = null;
-        let keyPointsBuffer: string[] = [];
-        const headerRegex = /^#{2,4}\s+⏱️\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(.*?)(?:\s+🎬|$)/;
-
-        const finalizeChapter = () => {
-            if (currentChapter && currentChapter.timestamp && currentChapter.title) {
-                if (keyPointsBuffer.length > 0) {
-                    currentChapter.key_points = [...keyPointsBuffer];
-                    currentChapter.summary = keyPointsBuffer.join('\n');
-                }
-                chapters.push(currentChapter as ChapterSummary);
-            }
-        }
-
-        for (const line of lines) {
-            const match = line.match(headerRegex);
-            if (match) {
-                finalizeChapter();
-                currentChapter = {
-                    timestamp: match[1],
-                    title: match[2].trim(),
-                };
-                keyPointsBuffer = [];
-                continue;
-            }
-
-            if (currentChapter) {
-                if (line.trim().startsWith('>')) continue; // Ignore quotes
-                if (!line.trim()) continue; // Ignore empty lines
-                // 提取 - 开头的要点行作为 key_points
-                const pointMatch = line.match(/^\s*[-*+]\s+(.+)$/);
-                if (pointMatch) {
-                    keyPointsBuffer.push(pointMatch[1].trim());
-                }
-            }
-        }
-        finalizeChapter();
-        return chapters;
+        return parseChaptersFromMarkdown(content);
     }
 }

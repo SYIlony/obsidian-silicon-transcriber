@@ -1,5 +1,19 @@
 # 开发日志
 
+## [2026-09-18 11:22:26] feat(mindmap): 新增「局部思维导图」命令 —— 选分块生成分支并追加到已有导图
+
+- **需求**：运行命令 → 选中智能笔记的特定分块（%%BATCH_N%% 划分）→ LLM 生成局部导图 → 追加到所选导图文件（挂到根节点下、排在现有二级分支最后）
+- **新增命令**：🧩 局部思维导图（追加到已有导图）（id `partial-mindmap-append`），需先打开智能笔记（含 %%BATCH_N%% 分块标记）
+- **新增模块 [`src/partial-mindmap.ts`](src/partial-mindmap.ts:1)**：
+  - `parseNoteChunks`：解析 %%BATCH_N_START/END%% 分块（编号 / 首尾时间戳 / 首标题 / 章节数）
+  - `PartialMindmapModal`：多选弹窗——分块勾选（全选/清空）；目标导图确认（自动匹配同名 🧠-rich.md → 🧠.md；支持同目录候选下拉更换 + 全库模糊搜索兜底；匹配不到时强制手动选择）
+  - rich 合并 `appendBranchesToRichMindmap`：直接编辑文件内 JSON 数据块（`mindData[0]`），新节点挂根节点、与"最后一个二级分支"同侧、排在其子树最低点之下；坐标布局（叶子间距 34px、层级步进 170px、父节点居中于首尾子节点）；配色沿用现有二级分支色循环；id 用 MarkMind 同款 8-4-4 十六进制生成器
+  - basic 合并 `appendBranchesToBasicMindmap`：在最后一个 ## 分支之后（下一个一级标题之前）插入 Markdown
+- **LLM 侧（[`src/llm.ts`](src/llm.ts:1)）**：抽取共享辅助 `requestMindmapLLMText` / `postProcessMindmapMarkdown`（父节点加粗 + `### [MM:SS]` 链接替换，逻辑逐字迁移，全量生成行为不变）；新增 `generatePartialMindmapContent`，prompt 携带"现有导图骨架"供 LLM 参考命名风格与分类粒度，按内容自适应输出 1~3 条 `##` 分支
+- **安全性**：写入前关闭目标文件已打开的 mindmapview（反编译 MarkMind 3.5.7 确认：不监听外部文件修改、关闭视图不写盘），避免陈旧内存数据覆盖写入结果；写入走 `safeWriteWithRetry` 重试
+- **验证**：离线仿真 9 项全过——真实笔记 9 分块解析、章节/大纲解析、真实 rich 文件合并（节点数/根节点/pid 完整性/位置/配色/二次追加 id 唯一）、basic 插入位置、目标自动匹配、链接 HTML 与 `$` 符号 JSON 往返逐字保留；另在 4 个不同结构的真实导图上复检几何布局
+- **编译**：`npx tsc --noEmit` 零错误，`npm run build` 成功（`main.js 257.5kb`）
+
 ## [2026-08-14 18:30:00] task(asr): ASR 上传从 curl 改为 Node.js 原生 https 直传，大幅提升上传速度
 
 - **问题**：之前 ASR 上传使用 `spawn('curl', ...)` 调用系统 curl，上传速度慢且无进度反馈（仅显示"上传中 (via curl)..."文案）

@@ -1226,6 +1226,190 @@ function buildFallbackMindmap(
     return content;
 }
 
+/** 思维导图 LLM 通用系统提示词 */
+const MINDMAP_SYSTEM_PROMPT = "You are a mindmap outline generator. Output pure Markdown. NEVER output HTML tags. Keep nodes structured, logical, and easy to understand using concise but meaningful phrases. Respect the input knowledge points as independent units — do not merge different topics into one node. 请使用中文输出内容。专业术语可保留英文原文，但整体表述应以中文为主，避免大段英文。";
+
+interface MindmapRawResponse {
+    /** 清理后的纯文本内容（空串表示失败） */
+    text: string;
+    /** 是否被 content_filter 拦截 */
+    hadContentFilter: boolean;
+}
+
+/**
+ * 调用思维导图专用 LLM（流式），返回清理后的纯文本内容
+ */
+async function requestMindmapLLMText(prompt: string, logTag: string): Promise<MindmapRawResponse> {
+    const mindmapProvider = {
+      NAME: 'Mindmap LLM',
+      API_KEY: LLM_MINDMAP_CONFIG.API_KEY,
+      BASE_URL: LLM_MINDMAP_CONFIG.BASE_URL,
+      MODEL: LLM_MINDMAP_CONFIG.MODEL,
+      EXTRA_BODY: LLM_MINDMAP_CONFIG.EXTRA_BODY
+    };
+    console.log(`🔑 [${logTag}] 使用思维导图专用配置 (model=${mindmapProvider.MODEL}, base=${mindmapProvider.BASE_URL})`);
+
+    // SSE 实时拼接缓冲区
+    let mmContent = '';
+    let mmReasoning = '';
+    let mmChunkCount = 0;
+    let mmHasContentFilter = false;
+
+    const response = await requestDirect({
+        url: mindmapProvider.BASE_URL,
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${mindmapProvider.API_KEY}`
+        },
+        timeoutMs: 1_800_000,
+        firstByteTimeoutMs: 60_000,
+        idleTimeoutMs: 120_000,
+        body: JSON.stringify({
+            model: mindmapProvider.MODEL,
+            messages: [
+                { role: "system", content: MINDMAP_SYSTEM_PROMPT },
+                { role: "user", content: prompt }
+            ],
+            stream: true,
+            temperature: 0.3,
+            ...(mindmapProvider.EXTRA_BODY || {})
+        }),
+        onSSEData: (data: string) => {
+            mmChunkCount++;
+            try {
+                const chunk = JSON.parse(data);
+                const delta = chunk.choices?.[0]?.delta ?? chunk.choices?.[0]?.message ?? {};
+                if (typeof delta.content === 'string') mmContent += delta.content;
+                if (typeof delta.reasoning_content === 'string') mmReasoning += delta.reasoning_content;
+                if (typeof delta.reasoning === 'string' && !mmReasoning) mmReasoning += delta.reasoning;
+                // 检测 content_filter
+                const fr = chunk.choices?.[0]?.finish_reason;
+                if (fr === 'content_filter') mmHasContentFilter = true;
+            } catch {
+                // 单行 JSON 解析失败，跳过
+            }
+        }
+    });
+
+    console.log(`📊 [${logTag}] HTTP ${response.status} | SSE chunks: ${mmChunkCount} | content 长度: ${mmContent.length} | reasoning 长度: ${mmReasoning.length}`);
+
+    // 🛡️ 检测 content_filter
+    if (mmHasContentFilter || response.text.includes('content_filter')) {
+      return { text: '', hadContentFilter: true };
+    }
+
+    let content = "";
+    let usedField: 'content' | 'reasoning_content' | 'reasoning' | 'none' = 'none';
+    if (mmContent && mmContent.trim() !== '') {
+      content = mmContent;
+      usedField = 'content';
+    } else if (mmReasoning && mmReasoning.trim() !== '') {
+      content = mmReasoning;
+      usedField = 'reasoning_content';
+      console.warn(`⚠️ [${logTag}] content 字段为空，回退使用 reasoning_content 字段（长度: ${content.length}）`);
+    } else {
+      // 回退到 parseSSEResponse
+      const { content: fbContent, reasoning: fbReasoning } = parseSSEResponse(response.text);
+      if (fbContent && fbContent.trim() !== '') {
+        content = fbContent;
+        usedField = 'content';
+      } else if (fbReasoning && fbReasoning.trim() !== '') {
+        content = fbReasoning;
+        usedField = 'reasoning_content';
+      }
+    }
+
+    // 🛡️ 严格检查 AI 返回数据是否为空（仅在 content 与 reasoning_content/reasoning 均为空时才判定失败）
+    if (!content || content.trim() === '') {
+      console.error(`❌ [${logTag}] AI 返回空数据（content / reasoning_content / reasoning 均为空）`);
+      return { text: '', hadContentFilter: false };
+    }
+
+    console.log(`✅ [${logTag}] 内容提取自字段: ${usedField}（长度: ${content.length}）`);
+
+    // 清理思考过程和代码块标记（对 content 与 reasoning 回退分支统一处理）
+    content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    content = content.replace(/^```(markdown|markmap)?\s*/im, '').replace(/\s*```$/m, '');
+    return { text: content, hadContentFilter: false };
+}
+
+/**
+ * 思维导图 Markdown 后处理：父节点加粗 + [MM:SS] 链接本地替换
+ */
+function postProcessMindmapMarkdown(content: string, chapters: ChapterSummary[], encodedNotePath: string): string {
+    // 自动为非叶子节点（有子节点的列表项）加粗
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        const match = line.match(/^(\s*)([-*+]\s+)(.*)$/);
+        if (match) {
+            const currentIndent = match[1].length;
+            let isParent = false;
+            
+            // 向后查找以判定是否含有子节点
+            for (let j = i + 1; j < lines.length; j++) {
+                const nextLine = lines[j];
+                if (nextLine.trim() === '') continue; // 跳过空行
+                
+                const nextMatch = nextLine.match(/^(\s*)([-*+]\s+)(.*)$/);
+                if (nextMatch) {
+                    const nextIndent = nextMatch[1].length;
+                    if (nextIndent > currentIndent) {
+                        isParent = true;
+                    }
+                    break; // 找到同级、高级或低级相邻节点，退出查找
+                } else if (nextLine.match(/^#+\s/)) {
+                    // 遇到标题，停止分析子节点
+                    break;
+                } else {
+                    // 普通文本（可能是换行内容）
+                    const textIndentMatch = nextLine.match(/^(\s*)/);
+                    const textIndent = textIndentMatch ? textIndentMatch[1].length : 0;
+                    if (textIndent <= currentIndent) {
+                        break; // 缩进小于等于当前节点，说明并非其子内容
+                    }
+                }
+            }
+            
+            if (isParent) {
+                let text = match[3];
+                // 剔除已有的加粗标记，避免嵌套
+                text = text.replace(/\*\*/g, '');
+                lines[i] = `${match[1]}${match[2]}**${text}**`;
+            }
+        }
+    }
+    content = lines.join('\n');
+
+    // 💡 改进点 2：本地硬编程替换。拦截 "### [MM:SS] 标题" 并转换为精确跳转链接
+    // 正则解释：匹配以 1-6个#开头，后跟 [时间戳]，最后是标题的行
+    const nodeRegex = /^(#+)\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)$/gm;
+
+    content = content.replace(nodeRegex, (match: string, hashes: string, timestamp: string, displayTitle: string) => {
+        // 1. 通过时间戳，反查原本真实的章节数据
+        const originalChapter = chapters.find(c => c.timestamp === timestamp);
+        
+        // 2. 获取真实的标题（防止 AI 幻觉乱改标题导致跳转不到正确的 Heading）
+        const realTitle = originalChapter ? originalChapter.title : displayTitle.trim();
+
+        // 3. 构建目标笔记中真实的 Heading 字符串 (对应 main.ts 里的 `#### ⏱️ MM:SS 标题`)
+        const targetHeading = `⏱️ ${timestamp} ${realTitle}`;
+        const encodedHeading = encodeURIComponent(targetHeading);
+
+        // 4. 清理显示的标题，强制加上 📌 图标 (按你的需求，不带空格)
+        let cleanDisplayTitle = displayTitle.trim();
+        if (!cleanDisplayTitle.startsWith('📌')) {
+            cleanDisplayTitle = `📌${cleanDisplayTitle}`;
+        }
+
+        // 5. 返回拼接好的完美 HTML 链接
+        return `${hashes} <a href="obsidian://silicon-jump?file=${encodedNotePath}&heading=${encodedHeading}">${cleanDisplayTitle}</a>`;
+    });
+
+    return content;
+}
+
 /**
  * 调用 LLM API 生成思维导图内容 (本地正则替换链接方案)
  * @param chapters 所有章节数据
@@ -1303,171 +1487,79 @@ ${chapters.map(c => {
 }).join('\n\n')}
 `;
 
-    // 使用 LLM_MINDMAP_CONFIG（思维导图专用配置）；reasoning_effort / thinking 由 EXTRA_BODY 展开
-    const mindmapProvider = {
-      NAME: 'Mindmap LLM',
-      API_KEY: LLM_MINDMAP_CONFIG.API_KEY,
-      BASE_URL: LLM_MINDMAP_CONFIG.BASE_URL,
-      MODEL: LLM_MINDMAP_CONFIG.MODEL,
-      EXTRA_BODY: LLM_MINDMAP_CONFIG.EXTRA_BODY
-    };
-    console.log(`🔑 使用思维导图专用配置生成思维导图 (model=${mindmapProvider.MODEL}, base=${mindmapProvider.BASE_URL})`);
+    const raw = await requestMindmapLLMText(prompt, '思维导图');
 
-    // SSE 实时拼接缓冲区
-    let mmContent = '';
-    let mmReasoning = '';
-    let mmChunkCount = 0;
-    let mmHasContentFilter = false;
-
-    const response = await requestDirect({
-        url: mindmapProvider.BASE_URL,
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${mindmapProvider.API_KEY}`
-        },
-        timeoutMs: 1_800_000,
-        firstByteTimeoutMs: 60_000,
-        idleTimeoutMs: 120_000,
-        body: JSON.stringify({
-            model: mindmapProvider.MODEL,
-            messages: [
-                { role: "system", content: "You are a mindmap outline generator. Output pure Markdown. NEVER output HTML tags. Keep nodes structured, logical, and easy to understand using concise but meaningful phrases. Respect the input knowledge points as independent units — do not merge different topics into one node. 请使用中文输出内容。专业术语可保留英文原文，但整体表述应以中文为主，避免大段英文。" },
-                { role: "user", content: prompt }
-            ],
-            stream: true,
-            temperature: 0.3,
-            ...(mindmapProvider.EXTRA_BODY || {})
-        }),
-        onSSEData: (data: string) => {
-            mmChunkCount++;
-            try {
-                const chunk = JSON.parse(data);
-                const delta = chunk.choices?.[0]?.delta ?? chunk.choices?.[0]?.message ?? {};
-                if (typeof delta.content === 'string') mmContent += delta.content;
-                if (typeof delta.reasoning_content === 'string') mmReasoning += delta.reasoning_content;
-                if (typeof delta.reasoning === 'string' && !mmReasoning) mmReasoning += delta.reasoning;
-                // 检测 content_filter
-                const fr = chunk.choices?.[0]?.finish_reason;
-                if (fr === 'content_filter') mmHasContentFilter = true;
-            } catch {
-                // 单行 JSON 解析失败，跳过
-            }
-        }
-    });
-
-    console.log(`📊 [思维导图] HTTP ${response.status} | SSE chunks: ${mmChunkCount} | content 长度: ${mmContent.length} | reasoning 长度: ${mmReasoning.length}`);
-
-    // 🛡️ 检测 content_filter
-    if (mmHasContentFilter || response.text.includes('content_filter')) {
-      console.warn('⚠️ 思维导图被 content_filter 拦截，尝试降级构建简化版思维导图');
-      return buildFallbackMindmap(chapters, videoName, encodedNotePath);
+    // 🛡️ content_filter 或空数据 → 降级构建简化版思维导图
+    if (raw.hadContentFilter) {
+        console.warn('⚠️ 思维导图被 content_filter 拦截，尝试降级构建简化版思维导图');
+        return buildFallbackMindmap(chapters, videoName, encodedNotePath);
+    }
+    if (!raw.text) {
+        // 降级：用章节摘要直接构建思维导图
+        return buildFallbackMindmap(chapters, videoName, encodedNotePath);
     }
 
-    let content = "";
-    let usedField: 'content' | 'reasoning_content' | 'reasoning' | 'none' = 'none';
-    if (mmContent && mmContent.trim() !== '') {
-      content = mmContent;
-      usedField = 'content';
-    } else if (mmReasoning && mmReasoning.trim() !== '') {
-      content = mmReasoning;
-      usedField = 'reasoning_content';
-      console.warn(`⚠️ 思维导图 content 字段为空，回退使用 reasoning_content 字段（长度: ${content.length}）`);
-    } else {
-      // 回退到 parseSSEResponse
-      const { content: fbContent, reasoning: fbReasoning } = parseSSEResponse(response.text);
-      if (fbContent && fbContent.trim() !== '') {
-        content = fbContent;
-        usedField = 'content';
-      } else if (fbReasoning && fbReasoning.trim() !== '') {
-        content = fbReasoning;
-        usedField = 'reasoning_content';
-      }
+    return postProcessMindmapMarkdown(raw.text, chapters, encodedNotePath);
+}
+
+/**
+ * 生成局部思维导图分支（内容仅含二级及以下节点，`## ` 开头），用于追加到已有导图
+ *
+ * @param chapters 所选分块中解析出的章节数据
+ * @param noteFile 智能笔记文件（用于生成跳转链接与标题）
+ * @param existingOutline 现有导图的二级/三级骨架（供 LLM 参考命名风格）
+ * @param chunkLabel 所选分块的说明（如 "第 5–6 部分"）
+ */
+export async function generatePartialMindmapContent(
+    chapters: ChapterSummary[],
+    noteFile: TFile,
+    existingOutline: string,
+    chunkLabel: string
+): Promise<string> {
+    const videoName = noteFile.basename.replace(/^📝/, '');
+    const encodedNotePath = encodeURIComponent(noteFile.path);
+
+    const prompt = `
+你是一位**知识体系架构师**。请为笔记 \`${videoName}\` 的**局部内容**（${chunkLabel}）生成一段**局部思维导图分支**，稍后会被追加到已有思维导图的末尾。
+
+## 现有思维导图骨架（命名风格与分类粒度参考；不要重复其中已有的内容）
+${existingOutline || '（暂无骨架，可自由组织）'}
+
+## 本次局部内容（格式：[时间戳] 标题 + 要点）
+${chapters.map(c => {
+  const detail = c.key_points
+    ? c.key_points.map(kp => `  - ${kp}`).join('\n')
+    : c.summary;
+  return `[${c.timestamp}] ${c.title}\n${detail}`;
+}).join('\n\n')}
+
+## 输出要求（严格遵守）
+1. 只输出 **二级分支**（以 \`## \` 开头），**不要输出根节点标题（\`# \`）**，不要输出任何解释性文字。
+2. 分支数量 1~3 条：所选内容属于同一主题时输出 1 条；确实跨主题时按逻辑拆成多条。分支命名可呼应骨架的命名风格（如 emoji 前缀、粒度），但不要与现有分支完全同名；命名要能概括该组内容。
+3. 具体章节必须使用 \`### [时间戳] 标题\` 格式（时间戳沿用数据中的 [MM:SS]；标题为 2-8 字凝练概括）。
+4. \`### [时间戳]\` 节点下用 \`- \` 列表展开要点，最多再嵌套一层缩进（两个空格 + \`- \`）。
+5. 数学公式使用行内 LaTeX（$...$ 包裹）；静默修正语音识别错别字。
+6. 不要输出 HTML、链接或代码块。
+7. 尊重原始章节切分，不要把不同知识点合并进同一个叶子节点。
+
+## 输出格式示例（严格参照）
+## 📦 局部：体积公式推导
+### [00:03] 旋转体定义
+- 核心定义
+  - 曲线绕轴旋转所扫出的立体
+### [04:42] 例题10.5
+- 定义域陷阱
+  - $\\sqrt{\\sin x}$ 要求 $\\sin x \\ge 0$
+`;
+
+    const raw = await requestMindmapLLMText(prompt, '局部思维导图');
+    if (raw.hadContentFilter) {
+        throw new Error('内容被模型 content_filter 拦截，请调整所选分块后重试');
     }
-
-    // 🛡️ 严格检查 AI 返回数据是否为空（仅在 content 与 reasoning_content/reasoning 均为空时才判定失败）
-    if (!content || content.trim() === '') {
-      console.error("❌ 思维导图 AI 返回空数据（content / reasoning_content / reasoning 均为空）");
-      // 降级：用章节摘要直接构建思维导图
-      return buildFallbackMindmap(chapters, videoName, encodedNotePath);
+    if (!raw.text) {
+        throw new Error('模型返回空内容，请重试或更换分块');
     }
-
-    console.log(`✅ 思维导图内容提取自字段: ${usedField}（长度: ${content.length}）`);
-
-    // 清理思考过程和代码块标记（对 content 与 reasoning 回退分支统一处理）
-    content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-    content = content.replace(/^```(markdown|markmap)?\s*/im, '').replace(/\s*```$/m, '');
-
-    // 自动为非叶子节点（有子节点的列表项）加粗
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i];
-        const match = line.match(/^(\s*)([-*+]\s+)(.*)$/);
-        if (match) {
-            const currentIndent = match[1].length;
-            let isParent = false;
-            
-            // 向后查找以判定是否含有子节点
-            for (let j = i + 1; j < lines.length; j++) {
-                const nextLine = lines[j];
-                if (nextLine.trim() === '') continue; // 跳过空行
-                
-                const nextMatch = nextLine.match(/^(\s*)([-*+]\s+)(.*)$/);
-                if (nextMatch) {
-                    const nextIndent = nextMatch[1].length;
-                    if (nextIndent > currentIndent) {
-                        isParent = true;
-                    }
-                    break; // 找到同级、高级或低级相邻节点，退出查找
-                } else if (nextLine.match(/^#+\s/)) {
-                    // 遇到标题，停止分析子节点
-                    break;
-                } else {
-                    // 普通文本（可能是换行内容）
-                    const textIndentMatch = nextLine.match(/^(\s*)/);
-                    const textIndent = textIndentMatch ? textIndentMatch[1].length : 0;
-                    if (textIndent <= currentIndent) {
-                        break; // 缩进小于等于当前节点，说明并非其子内容
-                    }
-                }
-            }
-            
-            if (isParent) {
-                let text = match[3];
-                // 剔除已有的加粗标记，避免嵌套
-                text = text.replace(/\*\*/g, '');
-                lines[i] = `${match[1]}${match[2]}**${text}**`;
-            }
-        }
-    }
-    content = lines.join('\n');
-
-    // 💡 改进点 2：本地硬编程替换。拦截 "### [MM:SS] 标题" 并转换为精确跳转链接
-    // 正则解释：匹配以 1-6个#开头，后跟 [时间戳]，最后是标题的行
-    const nodeRegex = /^(#+)\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)$/gm;
-
-    content = content.replace(nodeRegex, (match: string, hashes: string, timestamp: string, displayTitle: string) => {
-        // 1. 通过时间戳，反查原本真实的章节数据
-        const originalChapter = chapters.find(c => c.timestamp === timestamp);
-        
-        // 2. 获取真实的标题（防止 AI 幻觉乱改标题导致跳转不到正确的 Heading）
-        const realTitle = originalChapter ? originalChapter.title : displayTitle.trim();
-
-        // 3. 构建目标笔记中真实的 Heading 字符串 (对应 main.ts 里的 `#### ⏱️ MM:SS 标题`)
-        const targetHeading = `⏱️ ${timestamp} ${realTitle}`;
-        const encodedHeading = encodeURIComponent(targetHeading);
-
-        // 4. 清理显示的标题，强制加上 📌 图标 (按你的需求，不带空格)
-        let cleanDisplayTitle = displayTitle.trim();
-        if (!cleanDisplayTitle.startsWith('📌')) {
-            cleanDisplayTitle = `📌${cleanDisplayTitle}`;
-        }
-
-        // 5. 返回拼接好的完美 HTML 链接
-        return `${hashes} <a href="obsidian://silicon-jump?file=${encodedNotePath}&heading=${encodedHeading}">${cleanDisplayTitle}</a>`;
-    });
-
-    return content;
+    return postProcessMindmapMarkdown(raw.text, chapters, encodedNotePath);
 }
 
 /**
