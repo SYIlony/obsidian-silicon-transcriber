@@ -164,13 +164,30 @@ async function processChunk(task, idx, chunkStart, chunkDur, history, incomingLe
   }
   if (!topics) throw new Error(`${prefix} LLM 两次均返回空`);
 
-  // 幻觉过滤 + 排序（与插件一致）；对越界时间戳先尝试 +chunkStart 的相对时间解释
+  // 幻觉过滤 + 排序（与插件一致）
+  // 时间戳修复策略（按优先级）：
+  //   1) 原值就在分块窗口内 → 直接采用
+  //   2) 模型把 01:17:00 截断成 17:00（丢整点小时）→ 保留 MM:SS 找回正确小时
+  //   3) 模型给的是相对本分块的时间 → 加上 chunkStart
   const chunkEnd = chunkStart + chunkDur;
+  const inWindow = (v) => v >= chunkStart - 5 && v <= chunkEnd + 300;
   topics = topics.map(t => {
     const ts = parseTime(t.timestamp);
-    if (ts >= chunkStart - 5 && ts <= chunkEnd + 300) return t;
-    const adj = ts + chunkStart;
-    if (adj >= chunkStart - 5 && adj <= chunkEnd + 300) return { ...t, timestamp: formatTime(adj) };
+    if (inWindow(ts)) return t;
+    const mmss = ((ts % 3600) + 3600) % 3600;
+    for (let h = 0; h <= 8; h++) {
+      const cand = h * 3600 + mmss;
+      if (inWindow(cand)) {
+        log(`${prefix} 时间戳修正(补小时): ${t.timestamp} -> ${formatTime(cand)}`);
+        return { ...t, timestamp: formatTime(cand) };
+      }
+    }
+    const rel = ts + chunkStart;
+    if (inWindow(rel)) {
+      log(`${prefix} 时间戳修正(相对->绝对): ${t.timestamp} -> ${formatTime(rel)}`);
+      return { ...t, timestamp: formatTime(rel) };
+    }
+    log(`${prefix} 丢弃越界时间戳: ${t.timestamp}`);
     return null;
   }).filter(Boolean);
   if (topics.length === 0) throw new Error(`${prefix} 过滤后无有效知识点（时间戳越界且无法修正）`);

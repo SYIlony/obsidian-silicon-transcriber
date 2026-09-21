@@ -3,11 +3,11 @@
  * 处理 AI 章节分析和思维导图生成
  */
 
-import { App, TFile } from 'obsidian';
+import { App, Notice, TFile } from 'obsidian';
 import { requestDirect } from './http-direct';
 import { LLM_CONFIG, LLM_GLOBAL_CONFIG, LLM_MINDMAP_CONFIG, LLM_REPORT_CONFIG, LLM_REPORT_FALLBACK, LLMProvider, LLM_PROVIDERS } from './config';
 import { ChapterSummary, NoteMetaData, ExampleItem, GlobalCorrectionResult } from './types';
-import { formatTime } from './utils';
+import { formatTime, parseTime } from './utils';
 import { LatexProtect } from './latex-protect';
 
 /**
@@ -922,7 +922,7 @@ async function getBatchSummaryInternal(
     
     const prompt = `
 目标：对转写文本进行**详细的知识提取与课堂原始记录**的整理，输出考研背诵级笔记。
-输入：这是一段课堂录音转写的片段（从约 ${batchStartStr} 开始）。
+输入：这是一段课堂录音转写的片段（从约 ${batchStartStr} 开始，约 7 分钟）。输入中每行形如 [时间] 正文。
 输出：使用以下标记格式输出（不要输出 JSON，不要使用反引号或代码块）。
 
 ${history ? `前情提要参考：\n${history.slice(-2000)}\n---` : ""}
@@ -935,9 +935,14 @@ ${history ? `前情提要参考：\n${history.slice(-2000)}\n---` : ""}
 5. **处理截断**：**如果最后一部分内容被截断（例如话只讲了一半，或知识点未讲完），请不要勉强总结它。将其原封不动放在 LEFTOVER 标记中。**
 6. **块内结构化**：key_points 内可以自由使用 Markdown 语法（缩进子列表、序号、### 子标题、**加粗**等）来组织内容，让它有清晰的层次结构，而不是一大片平铺的条目。
 
+**时间戳硬性约束（违反会导致笔记错乱）：**
+- 本段音频从 ${batchStartStr} 开始，每个 timestamp 都必须 ≥ ${batchStartStr}。
+- timestamp 必须与输入中该知识点首行方括号里的时间**完全一致**（原样照抄，不要改写格式）。
+- **绝对不要省略小时位**：输入是 [01:24:35] 就必须写 01:24:35；写成 24:35、24:01 之类都是严重错误。
+
 输出格式（严格使用以下行首标记，每行一个字段，不要使用 JSON）：
 ===SEGMENT===
-timestamp: MM:SS
+timestamp: 照抄输入中该知识点首行方括号里的时间（含小时位，原样复制）
 title: 具体知识名 或 例题名
 key_points:
 - **加粗核心词** 后面跟详细内容（保留完整的推导步骤、定义条件或结论，有可以拿去背诵的实质内容。内容中重点概念也用 ** 加粗）
@@ -1055,7 +1060,7 @@ export async function getGlobalCorrectionSummary(
 
 输出格式（严格使用以下行首标记，每行一个字段，不要使用 JSON）：
 ===SEGMENT===
-timestamp: MM:SS
+timestamp: 照抄输入中该块原有的时间戳（含小时位，原样复制，不要省略、不要改写）
 title: 具体的知识点/例题标题
 key_points:
 - **加粗核心词** 后面跟详细内容（保留原始的推导步骤、定义条件或结论，内容中重点概念也用 ** 加粗）
@@ -1254,6 +1259,7 @@ async function requestMindmapLLMText(prompt: string, logTag: string): Promise<Mi
     let mmReasoning = '';
     let mmChunkCount = 0;
     let mmHasContentFilter = false;
+    let mmHitLength = false;
 
     const response = await requestDirect({
         url: mindmapProvider.BASE_URL,
@@ -1273,6 +1279,9 @@ async function requestMindmapLLMText(prompt: string, logTag: string): Promise<Mi
             ],
             stream: true,
             temperature: 0.3,
+            // 显式设置足够大的输出空间：长视频（100+ 章节）的导图大纲长度可观，
+            // 旧代码未设置曾导致大纲尾段被网关默认上限截断（导图末尾章节缺失）
+            max_tokens: 65536,
             ...(mindmapProvider.EXTRA_BODY || {})
         }),
         onSSEData: (data: string) => {
@@ -1283,9 +1292,10 @@ async function requestMindmapLLMText(prompt: string, logTag: string): Promise<Mi
                 if (typeof delta.content === 'string') mmContent += delta.content;
                 if (typeof delta.reasoning_content === 'string') mmReasoning += delta.reasoning_content;
                 if (typeof delta.reasoning === 'string' && !mmReasoning) mmReasoning += delta.reasoning;
-                // 检测 content_filter
+                // 检测 content_filter / 输出长度截断
                 const fr = chunk.choices?.[0]?.finish_reason;
                 if (fr === 'content_filter') mmHasContentFilter = true;
+                if (fr === 'length') mmHitLength = true;
             } catch {
                 // 单行 JSON 解析失败，跳过
             }
@@ -1293,6 +1303,11 @@ async function requestMindmapLLMText(prompt: string, logTag: string): Promise<Mi
     });
 
     console.log(`📊 [${logTag}] HTTP ${response.status} | SSE chunks: ${mmChunkCount} | content 长度: ${mmContent.length} | reasoning 长度: ${mmReasoning.length}`);
+
+    if (mmHitLength) {
+        console.warn(`⚠️ [${logTag}] 输出达到 max_tokens 上限（finish_reason=length），内容可能被截断`);
+        new Notice('⚠️ 思维导图输出达到模型长度上限，末尾可能不完整（可尝试重新生成）', 8000);
+    }
 
     // 🛡️ 检测 content_filter
     if (mmHasContentFilter || response.text.includes('content_filter')) {
@@ -1383,13 +1398,23 @@ function postProcessMindmapMarkdown(content: string, chapters: ChapterSummary[],
     content = lines.join('\n');
 
     // 💡 改进点 2：本地硬编程替换。拦截 "### [MM:SS] 标题" 并转换为精确跳转链接
-    // 正则解释：匹配以 1-6个#开头，后跟 [时间戳]，最后是标题的行
-    const nodeRegex = /^(#+)\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)$/gm;
+    // 正则解释：匹配以 1-6个#开头，后跟 [时间戳]（允许 3 位分钟、方括号内含空格），最后是标题的行
+    const nodeRegex = /^(#+)\s*\[\s*(\d{1,3}:\d{2}(?::\d{2})?)\s*\]\s*(.*)$/gm;
 
-    content = content.replace(nodeRegex, (match: string, hashes: string, timestamp: string, displayTitle: string) => {
-        // 1. 通过时间戳，反查原本真实的章节数据
-        const originalChapter = chapters.find(c => c.timestamp === timestamp);
-        
+    content = content.replace(nodeRegex, (match: string, hashes: string, rawTimestamp: string, displayTitle: string) => {
+        // 0. 时间戳归一化（容忍 119:03 这类非规范写法）；无法解析则保持原样，绝不生成错误链接
+        const tsSec = parseTime(rawTimestamp);
+        if (!Number.isFinite(tsSec)) return match;
+        const timestamp = formatTime(tsSec);
+
+        // 1. 通过时间戳，反查原本真实的章节数据。
+        //    同一时间戳可能有多个章节（例如结构梳理型课程老师一口气罗列多个模块），
+        //    此时优先选择标题与模型输出最接近的那个，避免链接全部指向同一章节
+        const sameTimeChapters = chapters.filter(c => c.timestamp === timestamp);
+        const originalChapter = sameTimeChapters.length > 1
+            ? pickBestTitleMatch(sameTimeChapters, displayTitle)
+            : sameTimeChapters[0];
+
         // 2. 获取真实的标题（防止 AI 幻觉乱改标题导致跳转不到正确的 Heading）
         const realTitle = originalChapter ? originalChapter.title : displayTitle.trim();
 
@@ -1408,6 +1433,42 @@ function postProcessMindmapMarkdown(content: string, chapters: ChapterSummary[],
     });
 
     return content;
+}
+
+/**
+ * 在多个同时间戳章节中挑选标题最接近的一个（标题匹配 → 包含关系 → 二元组相似度）
+ */
+function pickBestTitleMatch(candidates: ChapterSummary[], displayTitle: string): ChapterSummary {
+    const bigrams = (s: string): Set<string> => {
+        const out = new Set<string>();
+        for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2));
+        return out;
+    };
+    const target = displayTitle
+        .replace(/^📌/, '')
+        .replace(/[\s*`\\()[\]（）【】:：、，。!！?？"'“”‘’\-—]/g, '')
+        .toLowerCase();
+    let best = candidates[0];
+    let bestScore = -1;
+    for (const c of candidates) {
+        const t = c.title
+            .replace(/^📌/, '')
+            .replace(/[\s*`\\()[\]（）【】:：、，。!！?？"'“”‘’\-—]/g, '')
+            .toLowerCase();
+        let score: number;
+        if (t.length > 0 && t === target) score = 3;
+        else if (target.length > 1 && (t.includes(target) || target.includes(t))) score = 2;
+        else {
+            const ta = bigrams(target);
+            const tb = bigrams(t);
+            let inter = 0;
+            for (const x of ta) if (tb.has(x)) inter++;
+            const union = ta.size + tb.size - inter;
+            score = union > 0 ? inter / union : 0;
+        }
+        if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best;
 }
 
 /**

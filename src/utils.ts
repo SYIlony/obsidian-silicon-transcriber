@@ -105,15 +105,32 @@ export function sleep(ms: number): Promise<void> {
 
 /**
  * 将时间字符串解析为秒数
- * @param timeStr 时间字符串，格式: "MM:SS" 或 "HH:MM:SS"
- * @returns 秒数
+ * @param timeStr 时间字符串，格式: "MM:SS" 或 "HH:MM:SS"（容忍方括号、全角冒号、空白）
+ * @returns 秒数；无法解析时返回 NaN（绝不返回 0，避免被 formatTime 静默兜底成 00:00）
  */
 export function parseTime(timeStr: string): number {
-    if (!timeStr) return 0;
-    const parts = timeStr.split(':').map(Number);
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return 0;
+    if (typeof timeStr !== 'string') return NaN;
+    const cleaned = timeStr
+        .trim()
+        .replace(/^[\[（(【\s]+/, '')
+        .replace(/[\]）)】\s]+$/, '')
+        .replace(/[：﹕]/g, ':');
+    if (!cleaned) return NaN;
+    const parts = cleaned.split(':');
+    if (parts.length === 3) {
+        if (!parts.every(p => /^\d{1,4}$/.test(p))) return NaN;
+        const [h, m, s] = parts.map(Number);
+        if (m > 59 || s > 59) return NaN;
+        return h * 3600 + m * 60 + s;
+    }
+    if (parts.length === 2) {
+        // 允许 MM > 59（如 119:03），调用方会用 formatTime 归一化为 HH:MM:SS
+        if (!parts.every(p => /^\d{1,4}$/.test(p))) return NaN;
+        const [m, s] = parts.map(Number);
+        if (s > 59) return NaN;
+        return m * 60 + s;
+    }
+    return NaN;
 }
 
 /**

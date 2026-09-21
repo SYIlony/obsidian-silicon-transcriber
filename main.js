@@ -37,7 +37,7 @@ __export(main_exports, {
   default: () => TranscribePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var fs2 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
@@ -567,14 +567,29 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function parseTime(timeStr) {
-  if (!timeStr)
-    return 0;
-  const parts = timeStr.split(":").map(Number);
-  if (parts.length === 3)
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2)
-    return parts[0] * 60 + parts[1];
-  return 0;
+  if (typeof timeStr !== "string")
+    return NaN;
+  const cleaned = timeStr.trim().replace(/^[\[（(【\s]+/, "").replace(/[\]）)】\s]+$/, "").replace(/[：﹕]/g, ":");
+  if (!cleaned)
+    return NaN;
+  const parts = cleaned.split(":");
+  if (parts.length === 3) {
+    if (!parts.every((p) => /^\d{1,4}$/.test(p)))
+      return NaN;
+    const [h, m, s] = parts.map(Number);
+    if (m > 59 || s > 59)
+      return NaN;
+    return h * 3600 + m * 60 + s;
+  }
+  if (parts.length === 2) {
+    if (!parts.every((p) => /^\d{1,4}$/.test(p)))
+      return NaN;
+    const [m, s] = parts.map(Number);
+    if (s > 59)
+      return NaN;
+    return m * 60 + s;
+  }
+  return NaN;
 }
 function formatTime(s) {
   if (!s && s !== 0)
@@ -814,6 +829,9 @@ function uploadToASR(buffer, filename, notice, prefix, apiKey) {
     writeNextChunk();
   }));
 }
+
+// src/llm.ts
+var import_obsidian3 = require("obsidian");
 
 // src/http-direct.ts
 var http = require("http");
@@ -1725,7 +1743,7 @@ async function getBatchSummaryInternal(currentRaw, history, batchStartTime, prov
   const batchStartStr = formatTime(batchStartTime);
   const prompt = `
 \u76EE\u6807\uFF1A\u5BF9\u8F6C\u5199\u6587\u672C\u8FDB\u884C**\u8BE6\u7EC6\u7684\u77E5\u8BC6\u63D0\u53D6\u4E0E\u8BFE\u5802\u539F\u59CB\u8BB0\u5F55**\u7684\u6574\u7406\uFF0C\u8F93\u51FA\u8003\u7814\u80CC\u8BF5\u7EA7\u7B14\u8BB0\u3002
-\u8F93\u5165\uFF1A\u8FD9\u662F\u4E00\u6BB5\u8BFE\u5802\u5F55\u97F3\u8F6C\u5199\u7684\u7247\u6BB5\uFF08\u4ECE\u7EA6 ${batchStartStr} \u5F00\u59CB\uFF09\u3002
+\u8F93\u5165\uFF1A\u8FD9\u662F\u4E00\u6BB5\u8BFE\u5802\u5F55\u97F3\u8F6C\u5199\u7684\u7247\u6BB5\uFF08\u4ECE\u7EA6 ${batchStartStr} \u5F00\u59CB\uFF0C\u7EA6 7 \u5206\u949F\uFF09\u3002\u8F93\u5165\u4E2D\u6BCF\u884C\u5F62\u5982 [\u65F6\u95F4] \u6B63\u6587\u3002
 \u8F93\u51FA\uFF1A\u4F7F\u7528\u4EE5\u4E0B\u6807\u8BB0\u683C\u5F0F\u8F93\u51FA\uFF08\u4E0D\u8981\u8F93\u51FA JSON\uFF0C\u4E0D\u8981\u4F7F\u7528\u53CD\u5F15\u53F7\u6216\u4EE3\u7801\u5757\uFF09\u3002
 
 ${history ? `\u524D\u60C5\u63D0\u8981\u53C2\u8003\uFF1A
@@ -1740,9 +1758,14 @@ ${history.slice(-2e3)}
 5. **\u5904\u7406\u622A\u65AD**\uFF1A**\u5982\u679C\u6700\u540E\u4E00\u90E8\u5206\u5185\u5BB9\u88AB\u622A\u65AD\uFF08\u4F8B\u5982\u8BDD\u53EA\u8BB2\u4E86\u4E00\u534A\uFF0C\u6216\u77E5\u8BC6\u70B9\u672A\u8BB2\u5B8C\uFF09\uFF0C\u8BF7\u4E0D\u8981\u52C9\u5F3A\u603B\u7ED3\u5B83\u3002\u5C06\u5176\u539F\u5C01\u4E0D\u52A8\u653E\u5728 LEFTOVER \u6807\u8BB0\u4E2D\u3002**
 6. **\u5757\u5185\u7ED3\u6784\u5316**\uFF1Akey_points \u5185\u53EF\u4EE5\u81EA\u7531\u4F7F\u7528 Markdown \u8BED\u6CD5\uFF08\u7F29\u8FDB\u5B50\u5217\u8868\u3001\u5E8F\u53F7\u3001### \u5B50\u6807\u9898\u3001**\u52A0\u7C97**\u7B49\uFF09\u6765\u7EC4\u7EC7\u5185\u5BB9\uFF0C\u8BA9\u5B83\u6709\u6E05\u6670\u7684\u5C42\u6B21\u7ED3\u6784\uFF0C\u800C\u4E0D\u662F\u4E00\u5927\u7247\u5E73\u94FA\u7684\u6761\u76EE\u3002
 
+**\u65F6\u95F4\u6233\u786C\u6027\u7EA6\u675F\uFF08\u8FDD\u53CD\u4F1A\u5BFC\u81F4\u7B14\u8BB0\u9519\u4E71\uFF09\uFF1A**
+- \u672C\u6BB5\u97F3\u9891\u4ECE ${batchStartStr} \u5F00\u59CB\uFF0C\u6BCF\u4E2A timestamp \u90FD\u5FC5\u987B \u2265 ${batchStartStr}\u3002
+- timestamp \u5FC5\u987B\u4E0E\u8F93\u5165\u4E2D\u8BE5\u77E5\u8BC6\u70B9\u9996\u884C\u65B9\u62EC\u53F7\u91CC\u7684\u65F6\u95F4**\u5B8C\u5168\u4E00\u81F4**\uFF08\u539F\u6837\u7167\u6284\uFF0C\u4E0D\u8981\u6539\u5199\u683C\u5F0F\uFF09\u3002
+- **\u7EDD\u5BF9\u4E0D\u8981\u7701\u7565\u5C0F\u65F6\u4F4D**\uFF1A\u8F93\u5165\u662F [01:24:35] \u5C31\u5FC5\u987B\u5199 01:24:35\uFF1B\u5199\u6210 24:35\u300124:01 \u4E4B\u7C7B\u90FD\u662F\u4E25\u91CD\u9519\u8BEF\u3002
+
 \u8F93\u51FA\u683C\u5F0F\uFF08\u4E25\u683C\u4F7F\u7528\u4EE5\u4E0B\u884C\u9996\u6807\u8BB0\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B57\u6BB5\uFF0C\u4E0D\u8981\u4F7F\u7528 JSON\uFF09\uFF1A
 ===SEGMENT===
-timestamp: MM:SS
+timestamp: \u7167\u6284\u8F93\u5165\u4E2D\u8BE5\u77E5\u8BC6\u70B9\u9996\u884C\u65B9\u62EC\u53F7\u91CC\u7684\u65F6\u95F4\uFF08\u542B\u5C0F\u65F6\u4F4D\uFF0C\u539F\u6837\u590D\u5236\uFF09
 title: \u5177\u4F53\u77E5\u8BC6\u540D \u6216 \u4F8B\u9898\u540D
 key_points:
 - **\u52A0\u7C97\u6838\u5FC3\u8BCD** \u540E\u9762\u8DDF\u8BE6\u7EC6\u5185\u5BB9\uFF08\u4FDD\u7559\u5B8C\u6574\u7684\u63A8\u5BFC\u6B65\u9AA4\u3001\u5B9A\u4E49\u6761\u4EF6\u6216\u7ED3\u8BBA\uFF0C\u6709\u53EF\u4EE5\u62FF\u53BB\u80CC\u8BF5\u7684\u5B9E\u8D28\u5185\u5BB9\u3002\u5185\u5BB9\u4E2D\u91CD\u70B9\u6982\u5FF5\u4E5F\u7528 ** \u52A0\u7C97\uFF09
@@ -1831,7 +1854,7 @@ async function getGlobalCorrectionSummary(preliminarySummaries) {
 
 \u8F93\u51FA\u683C\u5F0F\uFF08\u4E25\u683C\u4F7F\u7528\u4EE5\u4E0B\u884C\u9996\u6807\u8BB0\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B57\u6BB5\uFF0C\u4E0D\u8981\u4F7F\u7528 JSON\uFF09\uFF1A
 ===SEGMENT===
-timestamp: MM:SS
+timestamp: \u7167\u6284\u8F93\u5165\u4E2D\u8BE5\u5757\u539F\u6709\u7684\u65F6\u95F4\u6233\uFF08\u542B\u5C0F\u65F6\u4F4D\uFF0C\u539F\u6837\u590D\u5236\uFF0C\u4E0D\u8981\u7701\u7565\u3001\u4E0D\u8981\u6539\u5199\uFF09
 title: \u5177\u4F53\u7684\u77E5\u8BC6\u70B9/\u4F8B\u9898\u6807\u9898
 key_points:
 - **\u52A0\u7C97\u6838\u5FC3\u8BCD** \u540E\u9762\u8DDF\u8BE6\u7EC6\u5185\u5BB9\uFF08\u4FDD\u7559\u539F\u59CB\u7684\u63A8\u5BFC\u6B65\u9AA4\u3001\u5B9A\u4E49\u6761\u4EF6\u6216\u7ED3\u8BBA\uFF0C\u5185\u5BB9\u4E2D\u91CD\u70B9\u6982\u5FF5\u4E5F\u7528 ** \u52A0\u7C97\uFF09
@@ -1977,6 +2000,7 @@ async function requestMindmapLLMText(prompt, logTag) {
   let mmReasoning = "";
   let mmChunkCount = 0;
   let mmHasContentFilter = false;
+  let mmHitLength = false;
   const response = await requestDirect({
     url: mindmapProvider.BASE_URL,
     method: "POST",
@@ -1995,6 +2019,9 @@ async function requestMindmapLLMText(prompt, logTag) {
       ],
       stream: true,
       temperature: 0.3,
+      // 显式设置足够大的输出空间：长视频（100+ 章节）的导图大纲长度可观，
+      // 旧代码未设置曾导致大纲尾段被网关默认上限截断（导图末尾章节缺失）
+      max_tokens: 65536,
       ...mindmapProvider.EXTRA_BODY || {}
     }),
     onSSEData: (data) => {
@@ -2012,11 +2039,17 @@ async function requestMindmapLLMText(prompt, logTag) {
         const fr = (_h = (_g = chunk.choices) == null ? void 0 : _g[0]) == null ? void 0 : _h.finish_reason;
         if (fr === "content_filter")
           mmHasContentFilter = true;
+        if (fr === "length")
+          mmHitLength = true;
       } catch (e) {
       }
     }
   });
   console.log(`\u{1F4CA} [${logTag}] HTTP ${response.status} | SSE chunks: ${mmChunkCount} | content \u957F\u5EA6: ${mmContent.length} | reasoning \u957F\u5EA6: ${mmReasoning.length}`);
+  if (mmHitLength) {
+    console.warn(`\u26A0\uFE0F [${logTag}] \u8F93\u51FA\u8FBE\u5230 max_tokens \u4E0A\u9650\uFF08finish_reason=length\uFF09\uFF0C\u5185\u5BB9\u53EF\u80FD\u88AB\u622A\u65AD`);
+    new import_obsidian3.Notice("\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u8F93\u51FA\u8FBE\u5230\u6A21\u578B\u957F\u5EA6\u4E0A\u9650\uFF0C\u672B\u5C3E\u53EF\u80FD\u4E0D\u5B8C\u6574\uFF08\u53EF\u5C1D\u8BD5\u91CD\u65B0\u751F\u6210\uFF09", 8e3);
+  }
   if (mmHasContentFilter || response.text.includes("content_filter")) {
     return { text: "", hadContentFilter: true };
   }
@@ -2085,9 +2118,14 @@ function postProcessMindmapMarkdown(content, chapters, encodedNotePath) {
     }
   }
   content = lines.join("\n");
-  const nodeRegex = /^(#+)\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)$/gm;
-  content = content.replace(nodeRegex, (match, hashes, timestamp, displayTitle) => {
-    const originalChapter = chapters.find((c) => c.timestamp === timestamp);
+  const nodeRegex = /^(#+)\s*\[\s*(\d{1,3}:\d{2}(?::\d{2})?)\s*\]\s*(.*)$/gm;
+  content = content.replace(nodeRegex, (match, hashes, rawTimestamp, displayTitle) => {
+    const tsSec = parseTime(rawTimestamp);
+    if (!Number.isFinite(tsSec))
+      return match;
+    const timestamp = formatTime(tsSec);
+    const sameTimeChapters = chapters.filter((c) => c.timestamp === timestamp);
+    const originalChapter = sameTimeChapters.length > 1 ? pickBestTitleMatch(sameTimeChapters, displayTitle) : sameTimeChapters[0];
     const realTitle = originalChapter ? originalChapter.title : displayTitle.trim();
     const targetHeading = `\u23F1\uFE0F ${timestamp} ${realTitle}`;
     const encodedHeading = encodeURIComponent(targetHeading);
@@ -2098,6 +2136,40 @@ function postProcessMindmapMarkdown(content, chapters, encodedNotePath) {
     return `${hashes} <a href="obsidian://silicon-jump?file=${encodedNotePath}&heading=${encodedHeading}">${cleanDisplayTitle}</a>`;
   });
   return content;
+}
+function pickBestTitleMatch(candidates, displayTitle) {
+  const bigrams = (s) => {
+    const out = /* @__PURE__ */ new Set();
+    for (let i = 0; i < s.length - 1; i++)
+      out.add(s.slice(i, i + 2));
+    return out;
+  };
+  const target = displayTitle.replace(/^📌/, "").replace(/[\s*`\\()[\]（）【】:：、，。!！?？"'“”‘’\-—]/g, "").toLowerCase();
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const c of candidates) {
+    const t = c.title.replace(/^📌/, "").replace(/[\s*`\\()[\]（）【】:：、，。!！?？"'“”‘’\-—]/g, "").toLowerCase();
+    let score;
+    if (t.length > 0 && t === target)
+      score = 3;
+    else if (target.length > 1 && (t.includes(target) || target.includes(t)))
+      score = 2;
+    else {
+      const ta = bigrams(target);
+      const tb = bigrams(t);
+      let inter = 0;
+      for (const x of ta)
+        if (tb.has(x))
+          inter++;
+      const union = ta.size + tb.size - inter;
+      score = union > 0 ? inter / union : 0;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
+  return best;
 }
 async function generateMindmapContent(chapters, noteFile, app) {
   const videoName = noteFile.basename.replace(/^📝/, "");
@@ -2335,10 +2407,10 @@ ${reportData.errorLog.slice(0, 5).map((e) => `- ${e}`).join("\n")}` : ""}
 }
 
 // src/batch-modal.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
-var BatchTranscribeModal = class extends import_obsidian3.Modal {
+var BatchTranscribeModal = class extends import_obsidian4.Modal {
   constructor(app, onConfirm) {
     super(app);
     this.selectedFiles = /* @__PURE__ */ new Set();
@@ -2456,7 +2528,7 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
     this.startBtn.disabled = true;
     this.startBtn.onclick = () => {
       if (this.selectedFiles.size === 0) {
-        new import_obsidian3.Notice("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u6587\u4EF6");
+        new import_obsidian4.Notice("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u6587\u4EF6");
         return;
       }
       this.onConfirm(Array.from(this.selectedFiles));
@@ -2522,7 +2594,7 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
             continue;
           seen.add(relChildPath);
           const tfile = this.app.vault.getAbstractFileByPath(relChildPath);
-          if (tfile instanceof import_obsidian3.TFile) {
+          if (tfile instanceof import_obsidian4.TFile) {
             results.push(tfile);
           } else {
             let stat;
@@ -2531,7 +2603,7 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
             } catch (e) {
               stat = { size: 0 };
             }
-            const proxy = Object.create(import_obsidian3.TFile.prototype);
+            const proxy = Object.create(import_obsidian4.TFile.prototype);
             proxy.path = relChildPath;
             proxy.name = entry.name;
             proxy.basename = entry.name.replace(/\.[^.]+$/, "");
@@ -2556,9 +2628,9 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
   /** 获取或创建文件夹代理对象 */
   getFolderProxy(folderPath, app) {
     const folder = app.vault.getAbstractFileByPath(folderPath);
-    if (folder instanceof import_obsidian3.TFolder)
+    if (folder instanceof import_obsidian4.TFolder)
       return folder;
-    const proxy = Object.create(import_obsidian3.TFolder.prototype);
+    const proxy = Object.create(import_obsidian4.TFolder.prototype);
     proxy.path = folderPath;
     proxy.name = folderPath.split("/").pop() || folderPath;
     proxy.parent = null;
@@ -2570,7 +2642,7 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
     const dir = ((_a = file.parent) == null ? void 0 : _a.path) === "/" ? "" : ((_b = file.parent) == null ? void 0 : _b.path) || "";
     const { notePath } = calculateNotePaths(dir, file.basename);
     const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-    if (!(noteFile instanceof import_obsidian3.TFile))
+    if (!(noteFile instanceof import_obsidian4.TFile))
       return false;
     const cache = this.app.metadataCache.getFileCache(noteFile);
     if (!cache)
@@ -2920,7 +2992,7 @@ var BatchTranscribeModal = class extends import_obsidian3.Modal {
 };
 
 // src/partial-mindmap.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var CHAPTER_HEAD_RE = /^#{2,4}\s+⏱️\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(.*?)(?:\s+🎬|$)/;
 function parseNoteChunks(noteContent) {
   const chunks = [];
@@ -3280,13 +3352,13 @@ function appendBranchesToBasicMindmap(basicText, branchMarkdown) {
 function collectCandidateMindmaps(app, noteFile) {
   const noteDir = noteFile.parent;
   let mapDir = noteDir;
-  if (noteDir && noteDir.name.includes("\u667A\u80FD\u7B14\u8BB0") && noteDir.parent instanceof import_obsidian4.TFolder) {
+  if (noteDir && noteDir.name.includes("\u667A\u80FD\u7B14\u8BB0") && noteDir.parent instanceof import_obsidian5.TFolder) {
     mapDir = noteDir.parent;
   }
   const candidates = [];
   if (mapDir) {
     for (const child of mapDir.children) {
-      if (child instanceof import_obsidian4.TFile && child.extension === "md" && child.basename.includes("\u{1F9E0}")) {
+      if (child instanceof import_obsidian5.TFile && child.extension === "md" && child.basename.includes("\u{1F9E0}")) {
         candidates.push(child);
       }
     }
@@ -3335,7 +3407,7 @@ function collectCandidateMindmaps(app, noteFile) {
   }
   return { candidates, defaultTarget };
 }
-var MindmapTargetPickerModal = class extends import_obsidian4.FuzzySuggestModal {
+var MindmapTargetPickerModal = class extends import_obsidian5.FuzzySuggestModal {
   constructor(app, onPick) {
     super(app);
     this.onPick = onPick;
@@ -3354,7 +3426,7 @@ var MindmapTargetPickerModal = class extends import_obsidian4.FuzzySuggestModal 
     this.onPick(item);
   }
 };
-var PartialMindmapModal = class extends import_obsidian4.Modal {
+var PartialMindmapModal = class extends import_obsidian5.Modal {
   constructor(app, options, onChoice) {
     super(app);
     this.selectedIndexes = /* @__PURE__ */ new Set();
@@ -3512,14 +3584,14 @@ function openPartialMindmapModal(app, options, onChoice) {
 function viewFileOf(view) {
   if (view !== null && typeof view === "object" && "file" in view) {
     const f = view.file;
-    return f instanceof import_obsidian5.TFile ? f : null;
+    return f instanceof import_obsidian6.TFile ? f : null;
   }
   return null;
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-var TranscribePlugin = class extends import_obsidian5.Plugin {
+var TranscribePlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     /** FFmpeg 可执行文件路径 */
@@ -3554,6 +3626,8 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
     this.batchContentCache = /* @__PURE__ */ new Map();
     /** 当前任务执行报告 */
     this.currentTaskReport = null;
+    /** 💾 当前任务的断点检查点（用于断点续跑，随批次进度增量落盘） */
+    this.currentCheckpoint = null;
     /** 🔒 文件写入互斥锁：确保同一时间只有一个写入操作，防止并发 read-modify-write 竞争 */
     this.fileWriteLock = Promise.resolve();
   }
@@ -3572,6 +3646,130 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       return await fn();
     } finally {
       resolve();
+    }
+  }
+  /** 💾 断点检查点目录（插件目录下的 checkpoints 子目录） */
+  checkpointDir() {
+    var _a;
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof import_obsidian6.FileSystemAdapter))
+      return "";
+    return path2.join(adapter.getBasePath(), (_a = this.manifest.dir) != null ? _a : "", "checkpoints");
+  }
+  /** 💾 根据视频路径生成检查点文件绝对路径（可读前缀 + 路径哈希，避免 Windows 260 字符上限） */
+  checkpointFilePath(videoPath) {
+    let hash = 5381;
+    for (let i = 0; i < videoPath.length; i++) {
+      hash = (hash << 5) + hash + videoPath.charCodeAt(i) | 0;
+    }
+    const safe = videoPath.replace(/[\\/:*?"<>|]/g, "_");
+    const prefix = safe.length > 80 ? safe.slice(0, 80) : safe;
+    return path2.join(this.checkpointDir(), `${prefix}_${(hash >>> 0).toString(36)}.json`);
+  }
+  /** 💾 保存检查点（同步写盘，失败不阻断主流程） */
+  saveCheckpoint(checkpoint) {
+    try {
+      checkpoint.historySummaries = this.historySummaries;
+      checkpoint.allChapterSummaries = this.allChapterSummaries;
+      const dir = this.checkpointDir();
+      if (!dir)
+        return;
+      fs2.mkdirSync(dir, { recursive: true });
+      fs2.writeFileSync(this.checkpointFilePath(checkpoint.videoPath), JSON.stringify(checkpoint, null, 2), "utf-8");
+    } catch (e) {
+      console.warn("[\u65AD\u70B9] \u4FDD\u5B58\u68C0\u67E5\u70B9\u5931\u8D25:", e);
+    }
+  }
+  /** 💾 读取指定视频的检查点 */
+  loadCheckpoint(videoPath) {
+    try {
+      const p = this.checkpointFilePath(videoPath);
+      if (!fs2.existsSync(p))
+        return null;
+      const raw = JSON.parse(fs2.readFileSync(p, "utf-8"));
+      if (!raw || raw.version !== 1)
+        return null;
+      return raw;
+    } catch (e) {
+      console.warn("[\u65AD\u70B9] \u8BFB\u53D6\u68C0\u67E5\u70B9\u5931\u8D25:", e);
+      return null;
+    }
+  }
+  /** 💾 清除指定视频的检查点 */
+  clearCheckpoint(videoPath) {
+    try {
+      const p = this.checkpointFilePath(videoPath);
+      if (fs2.existsSync(p))
+        fs2.rmSync(p);
+    } catch (e) {
+      console.warn("[\u65AD\u70B9] \u6E05\u9664\u68C0\u67E5\u70B9\u5931\u8D25:", e);
+    }
+  }
+  /** 💾 列出所有检查点，按修改时间倒序（最新在前） */
+  listCheckpoints() {
+    try {
+      const dir = this.checkpointDir();
+      if (!dir || !fs2.existsSync(dir))
+        return [];
+      return fs2.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => {
+        const full = path2.join(dir, f);
+        try {
+          const raw = JSON.parse(fs2.readFileSync(full, "utf-8"));
+          if (!raw || raw.version !== 1)
+            return null;
+          return {
+            filePath: full,
+            checkpoint: raw,
+            mtimeMs: fs2.statSync(full).mtimeMs
+          };
+        } catch (e) {
+          return null;
+        }
+      }).filter((x) => x !== null).sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch (e) {
+      console.warn("[\u65AD\u70B9] \u5217\u51FA\u68C0\u67E5\u70B9\u5931\u8D25:", e);
+      return [];
+    }
+  }
+  /**
+   * 在写入锁内把某个分块区间的内容替换为指定文本（占位/提示用），失败只告警不抛出。
+   * @returns 是否写入成功
+   */
+  async writeSectionText(targetLeaf, editor, anchorId, text) {
+    const startMarker = `%%${anchorId}_START%%`;
+    const endMarker = `%%${anchorId}_END%%`;
+    try {
+      await this.withFileLock(async () => {
+        const noteFile = targetLeaf.view.file;
+        if (noteFile instanceof import_obsidian6.TFile) {
+          const fileContent = await this.app.vault.read(noteFile);
+          const sIdx = fileContent.indexOf(startMarker);
+          const eIdx = fileContent.indexOf(endMarker);
+          if (sIdx !== -1 && eIdx !== -1) {
+            const newFileContent = fileContent.substring(0, sIdx + startMarker.length) + `
+${text}
+` + fileContent.substring(eIdx);
+            await this.app.vault.modify(noteFile, newFileContent);
+          }
+        } else {
+          const docContent = editor.getValue();
+          const startIndex = docContent.indexOf(startMarker);
+          const endIndex = docContent.indexOf(endMarker);
+          if (startIndex !== -1 && endIndex !== -1) {
+            editor.replaceRange(
+              `
+${text}
+`,
+              editor.offsetToPos(startIndex + startMarker.length),
+              editor.offsetToPos(endIndex)
+            );
+          }
+        }
+      });
+      return true;
+    } catch (e) {
+      console.warn(`[${anchorId}] \u533A\u95F4\u6587\u672C\u5199\u5165\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u4E3B\u6D41\u7A0B\uFF09:`, e);
+      return false;
     }
   }
   /**
@@ -3621,7 +3819,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       return true;
     } catch (e) {
       console.error("\u274C \u52A0\u8F7D secrets.json \u5931\u8D25", e);
-      new import_obsidian5.Notice("Silicon Transcriber: \u274C \u52A0\u8F7D secrets.json \u5931\u8D25");
+      new import_obsidian6.Notice("Silicon Transcriber: \u274C \u52A0\u8F7D secrets.json \u5931\u8D25");
       return false;
     }
   }
@@ -3631,7 +3829,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
     if (!hasApiKeys) {
       const migrated = await this.loadSecrets();
       if (migrated) {
-        new import_obsidian5.Notice("Silicon Transcriber: \u2705 \u5DF2\u4ECE secrets.json \u81EA\u52A8\u5BFC\u5165 API Key", 5e3);
+        new import_obsidian6.Notice("Silicon Transcriber: \u2705 \u5DF2\u4ECE secrets.json \u81EA\u52A8\u5BFC\u5165 API Key", 5e3);
       }
     }
     updateConfigsFromSettings(this.settings);
@@ -3674,6 +3872,13 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
         await this.openBatchTranscribeModal();
       }
     });
+    this.addCommand({
+      id: "resume-transcribe",
+      name: "\u25B6\uFE0F \u7EE7\u7EED\u8F6C\u5199\uFF08\u65AD\u70B9\u7EED\u8DD1\uFF09",
+      callback: async () => {
+        await this.resumeFromCheckpoint();
+      }
+    });
   }
   /**
    * 打开批量转写选择窗口
@@ -3707,7 +3912,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
         }
       }
       let noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (!(noteFile instanceof import_obsidian5.TFile)) {
+      if (!(noteFile instanceof import_obsidian6.TFile)) {
         try {
           let resourceUrl;
           try {
@@ -3744,14 +3949,14 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       added++;
     }
     if (added > 0) {
-      new import_obsidian5.Notice(`\u2705 \u5DF2\u6DFB\u52A0 ${added} \u4E2A\u6587\u4EF6\u5230\u8F6C\u5199\u961F\u5217${skipped > 0 ? `\uFF08\u8DF3\u8FC7 ${skipped} \u4E2A\uFF09` : ""}`, 3e3);
+      new import_obsidian6.Notice(`\u2705 \u5DF2\u6DFB\u52A0 ${added} \u4E2A\u6587\u4EF6\u5230\u8F6C\u5199\u961F\u5217${skipped > 0 ? `\uFF08\u8DF3\u8FC7 ${skipped} \u4E2A\uFF09` : ""}`, 3e3);
       if (!this.isProcessing) {
         this.processQueue();
       } else {
         this.updateQueueStatus();
       }
     } else {
-      new import_obsidian5.Notice(`\u26A0\uFE0F \u6CA1\u6709\u6DFB\u52A0\u4EFB\u4F55\u6587\u4EF6${skipped > 0 ? `\uFF08\u8DF3\u8FC7 ${skipped} \u4E2A\uFF09` : ""}`, 3e3);
+      new import_obsidian6.Notice(`\u26A0\uFE0F \u6CA1\u6709\u6DFB\u52A0\u4EFB\u4F55\u6587\u4EF6${skipped > 0 ? `\uFF08\u8DF3\u8FC7 ${skipped} \u4E2A\uFF09` : ""}`, 3e3);
     }
   }
   async onunload() {
@@ -3779,7 +3984,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
         targetTFile = files.find((f) => f.name === targetName || f.basename === targetName || f.name === targetName + ".md") || null;
       }
     }
-    console.log("Target File resolved:", targetTFile instanceof import_obsidian5.TFile ? targetTFile.path : "null", "from input:", decodedFile);
+    console.log("Target File resolved:", targetTFile instanceof import_obsidian6.TFile ? targetTFile.path : "null", "from input:", decodedFile);
     const rightLeaves = this.app.workspace.getLeavesOfType("markdown").filter((l) => l.getRoot() === this.app.workspace.rightSplit);
     let targetLeaf = null;
     for (const leaf of rightLeaves) {
@@ -3787,7 +3992,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       if (!leafFile)
         continue;
       const isPathMatch = leafFile.path === decodedFile;
-      const isFileMatch = targetTFile instanceof import_obsidian5.TFile && leafFile.path === targetTFile.path;
+      const isFileMatch = targetTFile instanceof import_obsidian6.TFile && leafFile.path === targetTFile.path;
       if (isPathMatch || isFileMatch) {
         targetLeaf = leaf;
         break;
@@ -3801,7 +4006,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       }));
     }
     if (!targetLeaf) {
-      if (targetTFile instanceof import_obsidian5.TFile) {
+      if (targetTFile instanceof import_obsidian6.TFile) {
         targetLeaf = this.app.workspace.getRightLeaf(false);
         if (targetLeaf) {
           await targetLeaf.openFile(targetTFile);
@@ -3857,7 +4062,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
     const videoDir = ((_a = currentFile.parent) == null ? void 0 : _a.path) === "/" ? "" : ((_b = currentFile.parent) == null ? void 0 : _b.path) || "";
     const { notePath } = calculateNotePaths(videoDir, currentFile.basename);
     const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-    if (noteFile instanceof import_obsidian5.TFile) {
+    if (noteFile instanceof import_obsidian6.TFile) {
       await this.openNoteInRightSidebar(noteFile);
     }
   }
@@ -3942,7 +4147,7 @@ var TranscribePlugin = class extends import_obsidian5.Plugin {
       return;
     }
     if (!this.queueStatusNotice) {
-      this.queueStatusNotice = new import_obsidian5.Notice("\u{1F4CB} \u4EFB\u52A1\u961F\u5217\u5DF2\u542F\u52A8", 0);
+      this.queueStatusNotice = new import_obsidian6.Notice("\u{1F4CB} \u4EFB\u52A1\u961F\u5217\u5DF2\u542F\u52A8", 0);
     }
     let msg = "";
     if (currentTaskName) {
@@ -3994,7 +4199,7 @@ ${nextTasks}`;
       let targetLeaf = null;
       this.app.workspace.iterateAllLeaves((leaf) => {
         const file = leaf.view.file;
-        if (file && file.path === task.noteFile.path && leaf.view instanceof import_obsidian5.MarkdownView) {
+        if (file && file.path === task.noteFile.path && leaf.view instanceof import_obsidian6.MarkdownView) {
           targetLeaf = leaf;
         }
       });
@@ -4004,14 +4209,14 @@ ${nextTasks}`;
         targetLeaf = newLeaf;
         await sleep(300);
       }
-      if (targetLeaf && targetLeaf.view instanceof import_obsidian5.MarkdownView) {
+      if (targetLeaf && targetLeaf.view instanceof import_obsidian6.MarkdownView) {
         await this.processTranscription(task.videoFile, targetLeaf.view.editor, targetLeaf);
       } else {
-        new import_obsidian5.Notice(`\u274C \u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u6587\u4EF6: ${task.noteFile.basename}\uFF0C\u8DF3\u8FC7\u6B64\u4EFB\u52A1`);
+        new import_obsidian6.Notice(`\u274C \u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u6587\u4EF6: ${task.noteFile.basename}\uFF0C\u8DF3\u8FC7\u6B64\u4EFB\u52A1`);
       }
     } catch (error) {
       console.error("Task failed:", error);
-      new import_obsidian5.Notice(`\u274C \u4EFB\u52A1\u5931\u8D25: ${task.videoFile.basename} - ${error.message}`);
+      new import_obsidian6.Notice(`\u274C \u4EFB\u52A1\u5931\u8D25: ${task.videoFile.basename} - ${error.message}`);
     } finally {
       console.log(`\u{1F513} \u8F6C\u5199\u72B6\u6001\u9501\u5DF2\u6E05\u9664: ${task.noteFile.path}`);
       this.currentTranscribingNotePath = null;
@@ -4037,7 +4242,7 @@ ${nextTasks}`;
       if (videoFile) {
         noteFile = currentFile;
       } else {
-        new import_obsidian5.Notice("\u274C \u6CA1\u627E\u5230\u89C6\u9891/\u97F3\u9891\u9644\u4EF6");
+        new import_obsidian6.Notice("\u274C \u6CA1\u627E\u5230\u89C6\u9891/\u97F3\u9891\u9644\u4EF6");
         return;
       }
     } else if (this.isVideoView(view) && currentFile) {
@@ -4055,7 +4260,7 @@ ${nextTasks}`;
         }
       }
       noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (!(noteFile instanceof import_obsidian5.TFile)) {
+      if (!(noteFile instanceof import_obsidian6.TFile)) {
         try {
           let resourceUrl;
           try {
@@ -4076,7 +4281,7 @@ ${nextTasks}`;
           );
         } catch (err) {
           console.error(`\u521B\u5EFA\u7B14\u8BB0\u6587\u4EF6\u5931\u8D25: ${notePath}`, err);
-          new import_obsidian5.Notice(`\u274C \u65E0\u6CD5\u521B\u5EFA\u7B14\u8BB0\u6587\u4EF6: ${err.message}`);
+          new import_obsidian6.Notice(`\u274C \u65E0\u6CD5\u521B\u5EFA\u7B14\u8BB0\u6587\u4EF6: ${err.message}`);
           return;
         }
       }
@@ -4087,14 +4292,14 @@ ${nextTasks}`;
       );
       const isCurrentlyProcessing = this.currentTranscribingNotePath === noteFile.path;
       if (alreadyInQueue || isCurrentlyProcessing) {
-        new import_obsidian5.Notice(`\u23ED\uFE0F \u5DF2\u5728\u961F\u5217\u4E2D\u6216\u6B63\u5728\u5904\u7406: ${videoFile.basename}`, 3e3);
+        new import_obsidian6.Notice(`\u23ED\uFE0F \u5DF2\u5728\u961F\u5217\u4E2D\u6216\u6B63\u5728\u5904\u7406: ${videoFile.basename}`, 3e3);
         return;
       }
       this.transcriptionQueue.push({ videoFile, noteFile });
       if (!this.isProcessing) {
         this.processQueue();
       } else {
-        new import_obsidian5.Notice(`\u{1F4CB} \u5DF2\u6DFB\u52A0\u5230\u961F\u5217: ${videoFile.basename}\uFF08\u5F53\u524D\u8F6C\u5199\u5B8C\u6210\u540E\u81EA\u52A8\u5F00\u59CB\uFF09`, 3e3);
+        new import_obsidian6.Notice(`\u{1F4CB} \u5DF2\u6DFB\u52A0\u5230\u961F\u5217: ${videoFile.basename}\uFF08\u5F53\u524D\u8F6C\u5199\u5B8C\u6210\u540E\u81EA\u52A8\u5F00\u59CB\uFF09`, 3e3);
         this.updateQueueStatus();
       }
     } else {
@@ -4106,26 +4311,26 @@ ${nextTasks}`;
    * 主处理流程：转写 + AI 分析 + 思维导图
    */
   async processTranscription(file, editor, targetLeaf) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian5.FileSystemAdapter)) {
-      new import_obsidian5.Notice("\u975E\u684C\u9762\u73AF\u5883\u4E0D\u53EF\u7528");
+    if (!(adapter instanceof import_obsidian6.FileSystemAdapter)) {
+      new import_obsidian6.Notice("\u975E\u684C\u9762\u73AF\u5883\u4E0D\u53EF\u7528");
       return;
     }
     const inputPath = path2.join(adapter.getBasePath(), file.path);
     const pluginDir = path2.join(adapter.getBasePath(), (_a = this.manifest.dir) != null ? _a : "");
     this.ffmpegPath = path2.join(pluginDir, "ffmpeg.exe");
     if (!fs2.existsSync(this.ffmpegPath)) {
-      new import_obsidian5.Notice(`\u627E\u4E0D\u5230 ffmpeg.exe`);
+      new import_obsidian6.Notice(`\u627E\u4E0D\u5230 ffmpeg.exe`);
       return;
     }
     if (LLM_CONFIG.API_KEY.includes("\u4F60\u7684")) {
-      new import_obsidian5.Notice("\u26A0\uFE0F \u8BF7\u914D\u7F6E\u706B\u5C71\u5F15\u64CE API Key");
+      new import_obsidian6.Notice("\u26A0\uFE0F \u8BF7\u914D\u7F6E\u706B\u5C71\u5F15\u64CE API Key");
       return;
     }
     const ensureEditorAlive = () => {
       try {
-        if (!targetLeaf || !targetLeaf.view || !(targetLeaf.view instanceof import_obsidian5.MarkdownView)) {
+        if (!targetLeaf || !targetLeaf.view || !(targetLeaf.view instanceof import_obsidian6.MarkdownView)) {
           return null;
         }
         editor.getValue();
@@ -4141,16 +4346,16 @@ ${nextTasks}`;
       try {
         const { leaf: newLeaf } = await this.openTranscriptNote(file);
         targetLeaf = newLeaf;
-        editor = newLeaf.view instanceof import_obsidian5.MarkdownView ? newLeaf.view.editor : editor;
+        editor = newLeaf.view instanceof import_obsidian6.MarkdownView ? newLeaf.view.editor : editor;
         await sleep(300);
         editorCheck = ensureEditorAlive();
         if (!editorCheck) {
-          new import_obsidian5.Notice(`\u274C \u65E0\u6CD5\u6062\u590D\u7B14\u8BB0\u7A97\u53E3\uFF0C\u8DF3\u8FC7: ${file.basename}`);
+          new import_obsidian6.Notice(`\u274C \u65E0\u6CD5\u6062\u590D\u7B14\u8BB0\u7A97\u53E3\uFF0C\u8DF3\u8FC7: ${file.basename}`);
           return;
         }
       } catch (e) {
         console.error("\u91CD\u65B0\u6253\u5F00\u7B14\u8BB0\u5931\u8D25:", e);
-        new import_obsidian5.Notice(`\u274C \u91CD\u65B0\u6253\u5F00\u7B14\u8BB0\u5931\u8D25: ${file.basename}`);
+        new import_obsidian6.Notice(`\u274C \u91CD\u65B0\u6253\u5F00\u7B14\u8BB0\u5931\u8D25: ${file.basename}`);
         return;
       }
     }
@@ -4158,6 +4363,8 @@ ${nextTasks}`;
     this.pendingLeftoverRawText = "";
     this.allChapterSummaries = [];
     this.batchContentCache.clear();
+    this.batchWriteStatus.clear();
+    this.anchorStateCache.clear();
     this.aiQueue = Promise.resolve();
     this.activeAiCount = 0;
     this.currentTaskReport = {
@@ -4175,7 +4382,7 @@ ${nextTasks}`;
       startTime: /* @__PURE__ */ new Date(),
       endTime: /* @__PURE__ */ new Date()
     };
-    new import_obsidian5.Notice(`\u{1F680} \u542F\u52A8\u8F6C\u5199: ${file.name}`);
+    new import_obsidian6.Notice(`\u{1F680} \u542F\u52A8\u8F6C\u5199: ${file.name}`);
     try {
       const duration = await getVideoDuration(this.ffmpegPath, inputPath);
       let totalChunks = Math.ceil(duration / PROCESSING_CONFIG.CHUNK_SIZE);
@@ -4214,13 +4421,25 @@ ${nextTasks}`;
       this.currentTaskReport.totalDuration = duration;
       this.currentTaskReport.totalBatches = totalChunks;
       const initialNoteFile = targetLeaf.view.file;
-      if (initialNoteFile instanceof import_obsidian5.TFile) {
+      if (initialNoteFile instanceof import_obsidian6.TFile) {
         await this.app.vault.modify(initialNoteFile, initialContent);
         console.log("\u2705 \u521D\u59CB\u5185\u5BB9\u5DF2\u901A\u8FC7 vault.modify \u5199\u5165\u78C1\u76D8");
       } else {
         editor.setValue(initialContent);
         console.warn("\u26A0\uFE0F noteFile \u4E0D\u53EF\u7528\uFF0C\u56DE\u9000\u5230 editor.setValue");
       }
+      const checkpointNotePath = initialNoteFile instanceof import_obsidian6.TFile ? initialNoteFile.path : (_c = (_b = targetLeaf.view.file) == null ? void 0 : _b.path) != null ? _c : "";
+      this.currentCheckpoint = {
+        version: 1,
+        videoPath: file.path,
+        notePath: checkpointNotePath,
+        totalChunks,
+        duration,
+        historySummaries: "",
+        allChapterSummaries: [],
+        batches: new Array(totalChunks).fill(null).map(() => ({ done: false }))
+      };
+      this.saveCheckpoint(this.currentCheckpoint);
       await sleep(300);
       const verifyEditorContent = editor.getValue();
       let verifyDiskContent = "";
@@ -4236,7 +4455,7 @@ ${nextTasks}`;
         console.log("\u2705 \u521D\u59CB\u5185\u5BB9\u5199\u5165\u9A8C\u8BC1\u901A\u8FC7\uFF08\u78C1\u76D8\u786E\u8BA4\uFF09");
       } else if (verifyEditorContent.includes("BATCH_0_START")) {
         console.log("\u2705 \u521D\u59CB\u5185\u5BB9\u5199\u5165\u9A8C\u8BC1\u901A\u8FC7\uFF08\u7F16\u8F91\u5668\u786E\u8BA4\uFF0C\u78C1\u76D8\u540C\u6B65\u53EF\u80FD\u5EF6\u8FDF\uFF09");
-        if (initialNoteFile instanceof import_obsidian5.TFile) {
+        if (initialNoteFile instanceof import_obsidian6.TFile) {
           await this.app.vault.modify(initialNoteFile, editor.getValue());
           console.log("\u2705 \u5DF2\u5F3A\u5236\u540C\u6B65\u7F16\u8F91\u5668\u5185\u5BB9\u5230\u78C1\u76D8");
         }
@@ -4280,7 +4499,7 @@ ${nextTasks}`;
                 if (llmFailedCount >= MAX_LLM_FAILURES) {
                   llmCriticalError = true;
                   console.error(`\u274C LLM \u8FDE\u7EED\u5931\u8D25\u8FBE\u5230\u9608\u503C\uFF0C\u7EC8\u6B62\u5269\u4F59\u5206\u6790`);
-                  new import_obsidian5.Notice(`\u274C LLM \u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u7EC8\u6B62\u5206\u6790`, 8e3);
+                  new import_obsidian6.Notice(`\u274C LLM \u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u7EC8\u6B62\u5206\u6790`, 8e3);
                 }
               } else {
                 llmFailedCount = 0;
@@ -4291,7 +4510,7 @@ ${nextTasks}`;
               if (llmFailedCount >= MAX_LLM_FAILURES) {
                 llmCriticalError = true;
                 console.error(`\u274C LLM \u8FDE\u7EED\u5931\u8D25\u8FBE\u5230\u9608\u503C\uFF0C\u7EC8\u6B62\u5269\u4F59\u5206\u6790`);
-                new import_obsidian5.Notice(`\u274C LLM \u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u7EC8\u6B62\u5206\u6790`, 8e3);
+                new import_obsidian6.Notice(`\u274C LLM \u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u7EC8\u6B62\u5206\u6790`, 8e3);
               }
             }
           }
@@ -4307,6 +4526,7 @@ ${nextTasks}`;
         llmWorkers.push(llmWorker(0));
       }
       const processChunk = async (workerId, apiKey) => {
+        var _a2, _b2;
         while (currentChunkIndex < totalChunks) {
           const i = currentChunkIndex++;
           const chunkStart = i * PROCESSING_CONFIG.CHUNK_SIZE;
@@ -4314,7 +4534,7 @@ ${nextTasks}`;
           const chunkDuration = isLastChunk ? duration - chunkStart + 5 : PROCESSING_CONFIG.CHUNK_SIZE;
           const prefix = `[${i + 1}/${totalChunks}]`;
           const keyLabel = `Key${workerId % apiKeys.length + 1}-W${Math.floor(workerId / apiKeys.length) + 1}`;
-          const progressNotice = new import_obsidian5.Notice(`${prefix} \u23F3 [${keyLabel}] \u63D0\u53D6\u97F3\u9891...`, 0);
+          const progressNotice = new import_obsidian6.Notice(`${prefix} \u23F3 [${keyLabel}] \u63D0\u53D6\u97F3\u9891...`, 0);
           try {
             const mp3Buffer = await convertChunkToMp3(
               this.ffmpegPath,
@@ -4336,50 +4556,24 @@ ${nextTasks}`;
             const anchorId = `BATCH_${i}`;
             let pendingSegments = [];
             if (asrJson.segments) {
-              let chunkTextForEditor = "";
               asrJson.segments.forEach((seg) => {
                 const absStart = seg.start + chunkStart;
                 const absEnd = seg.end + chunkStart;
-                const cleanText = seg.text.trim();
-                const tStr = formatTime(absStart);
-                pendingSegments.push({ start: absStart, end: absEnd, text: cleanText });
-                chunkTextForEditor += `> **[[${file.name}#t=${tStr}|${tStr}]]** ${cleanText}
-`;
+                pendingSegments.push({ start: absStart, end: absEnd, text: (seg.text || "").trim() });
               });
-              try {
-                const startMarker = `%%${anchorId}_START%%`;
-                const endMarker = `%%${anchorId}_END%%`;
-                await this.withFileLock(async () => {
-                  const noteFile2 = targetLeaf.view.file;
-                  if (noteFile2 instanceof import_obsidian5.TFile) {
-                    const fileContent = await this.app.vault.read(noteFile2);
-                    const sIdx = fileContent.indexOf(startMarker);
-                    const eIdx = fileContent.indexOf(endMarker);
-                    if (sIdx !== -1 && eIdx !== -1) {
-                      const newBlock = `
-> [!quote]- \u23F3 \u7B2C ${i + 1} \u90E8\u5206\u5DF2\u8F6C\u5199\u5B8C\u6210\uFF0C\u6B63\u5728\u7B49\u5F85 AI \u5206\u6790...
-`;
-                      const newFileContent = fileContent.substring(0, sIdx + startMarker.length) + newBlock + fileContent.substring(eIdx);
-                      await this.app.vault.modify(noteFile2, newFileContent);
-                    }
-                  } else {
-                    const docContent = editor.getValue();
-                    const startIndex = docContent.indexOf(startMarker);
-                    const endIndex = docContent.indexOf(endMarker);
-                    if (startIndex !== -1 && endIndex !== -1) {
-                      const newContent = `
-> [!quote]- \u23F3 \u7B2C ${i + 1} \u90E8\u5206\u5DF2\u8F6C\u5199\u5B8C\u6210\uFF0C\u6B63\u5728\u7B49\u5F85 AI \u5206\u6790...
-`;
-                      editor.replaceRange(
-                        newContent,
-                        editor.offsetToPos(startIndex + startMarker.length),
-                        editor.offsetToPos(endIndex)
-                      );
-                    }
-                  }
-                });
-              } catch (e) {
-                console.warn(`[\u6279\u6B21 ${i}] \u4E2D\u95F4\u72B6\u6001\u66F4\u65B0\u5931\u8D25\uFF0C\u4E0D\u5F71\u54CD\u540E\u7EED\u6D41\u7A0B:`, e);
+            }
+            if (pendingSegments.length === 0) {
+              await this.writeSectionText(targetLeaf, editor, anchorId, "> [!note] \u672C\u90E8\u5206\u672A\u68C0\u6D4B\u5230\u8BED\u97F3\u5185\u5BB9\uFF08ASR \u672A\u8FD4\u56DE\u6587\u672C\uFF09");
+              this.batchWriteStatus.set(i, { success: true, retryCount: 0 });
+              if ((_a2 = this.currentCheckpoint) == null ? void 0 : _a2.batches[i]) {
+                this.currentCheckpoint.batches[i] = { done: true, segments: [] };
+                this.saveCheckpoint(this.currentCheckpoint);
+              }
+            } else {
+              await this.writeSectionText(targetLeaf, editor, anchorId, `> [!quote]- \u23F3 \u7B2C ${i + 1} \u90E8\u5206\u5DF2\u8F6C\u5199\u5B8C\u6210\uFF0C\u6B63\u5728\u7B49\u5F85 AI \u5206\u6790...`);
+              if ((_b2 = this.currentCheckpoint) == null ? void 0 : _b2.batches[i]) {
+                this.currentCheckpoint.batches[i].segments = pendingSegments;
+                this.saveCheckpoint(this.currentCheckpoint);
               }
             }
             allBatchJobs[i] = {
@@ -4389,8 +4583,13 @@ ${nextTasks}`;
             };
           } catch (e) {
             progressNotice.hide();
-            new import_obsidian5.Notice(`\u274C ${prefix} \u8F6C\u5199\u5931\u8D25: ${e.message}`);
+            new import_obsidian6.Notice(`\u274C ${prefix} \u8F6C\u5199\u5931\u8D25: ${e.message}`);
             allBatchJobs[i] = { segments: [], batchIndex: i, anchorId: `BATCH_${i}` };
+            if (this.currentTaskReport) {
+              this.currentTaskReport.failedBatches++;
+              this.currentTaskReport.errorLog.push(`\u6279\u6B21 ${i + 1} ASR \u8F6C\u5199\u5931\u8D25: ${e.message}`);
+            }
+            this.batchWriteStatus.set(i, { success: false, retryCount: 0, lastError: `ASR \u8F6C\u5199\u5931\u8D25: ${e.message}` });
           } finally {
             llmQueue.push(i);
             llmTasksAdded++;
@@ -4405,12 +4604,16 @@ ${nextTasks}`;
       this.activeAiCount++;
       await Promise.all(workers);
       await Promise.all(llmWorkers);
-      new import_obsidian5.Notice(`\u2728 \u5206\u5757\u5206\u6790\u5B8C\u6BD5\uFF0C\u5F00\u59CB\u5168\u5C40\u6821\u9A8C\u4E0E\u4FEE\u6B63`);
+      this.activeAiCount--;
+      const allSectionsOk = await this.ensureAllSectionsWritten(editor, targetLeaf, totalChunks, file.name);
+      if (!allSectionsOk) {
+        await this.pauseTranscriptionWithError(file, editor, targetLeaf, totalChunks);
+        return;
+      }
+      new import_obsidian6.Notice(`\u2728 \u5206\u5757\u5206\u6790\u5B8C\u6BD5\uFF0C\u5F00\u59CB\u5168\u5C40\u6821\u9A8C\u4E0E\u4FEE\u6B63`);
       await this.runGlobalCorrectionAnalysis(allBatchJobs, file.name, editor, targetLeaf, duration);
       this.currentTaskReport.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
-      this.activeAiCount--;
-      await this.ensureAllSectionsWritten(editor, targetLeaf, totalChunks, file.name);
-      new import_obsidian5.Notice("\u{1F389} \u667A\u80FD\u8F6C\u5199\u53CA\u7AE0\u8282\u5206\u6790\u5B8C\u6210\uFF01", 0);
+      new import_obsidian6.Notice("\u{1F389} \u667A\u80FD\u8F6C\u5199\u53CA\u7AE0\u8282\u5206\u6790\u5B8C\u6210\uFF01", 0);
       const viewState = targetLeaf.getViewState();
       if (viewState.type === "markdown") {
         viewState.state = { ...viewState.state, mode: "preview" };
@@ -4418,15 +4621,16 @@ ${nextTasks}`;
       }
       await this.generateMindMap(file);
       this.currentTaskReport.mindmapSuccess = true;
-      const videoDir = ((_b = file.parent) == null ? void 0 : _b.path) === "/" ? "" : ((_c = file.parent) == null ? void 0 : _c.path) || "";
+      const videoDir = ((_d = file.parent) == null ? void 0 : _d.path) === "/" ? "" : ((_e = file.parent) == null ? void 0 : _e.path) || "";
       const { notePath } = calculateNotePaths(videoDir, file.basename);
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian5.TFile) {
+      if (noteFile instanceof import_obsidian6.TFile) {
         await this.generateAndAppendReportToFile(noteFile);
       }
+      this.clearCheckpoint(file.path);
     } catch (error) {
       console.error(error);
-      new import_obsidian5.Notice(`\u274C \u9519\u8BEF: ${error.message}`);
+      new import_obsidian6.Notice(`\u274C \u9519\u8BEF: ${error.message}`);
       if (this.currentTaskReport) {
         this.currentTaskReport.errorLog.push(`\u7CFB\u7EDF\u9519\u8BEF: ${error.message}`);
       }
@@ -4438,7 +4642,7 @@ ${nextTasks}`;
   async runGlobalCorrectionAnalysis(jobs, fileName, editor, targetLeaf, totalDuration) {
     if (jobs.length === 0)
       return;
-    const notice = new import_obsidian5.Notice(`\u23F3 \u6B63\u5728\u51C6\u5907\u5168\u5C40\u6821\u9A8C\u6570\u636E...`, 0);
+    const notice = new import_obsidian6.Notice(`\u23F3 \u6B63\u5728\u51C6\u5907\u5168\u5C40\u6821\u9A8C\u6570\u636E...`, 0);
     try {
       notice.setMessage(`\u{1F4E4} \u6B63\u5728\u7EC4\u88C5\u63D0\u793A\u8BCD...`);
       let allSegments = [];
@@ -4515,7 +4719,43 @@ ${kps}`;
       }
       const aiDuration = ((Date.now() - aiStartTime) / 1e3).toFixed(1);
       notice.setMessage(`\u2699\uFE0F \u6821\u9A8C\u8017\u65F6 ${aiDuration}s\uFF0C\u6B63\u5728\u5206\u53D1\u6700\u7EC8\u66F4\u65B0...`);
-      topics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
+      const prelimSnapshot = this.allChapterSummaries;
+      const prelimTsCount = {};
+      for (const c of prelimSnapshot) {
+        const cSec = parseTime(c.timestamp);
+        const cTs = Number.isFinite(cSec) ? formatTime(Math.max(0, cSec)) : "";
+        prelimTsCount[cTs] = (prelimTsCount[cTs] || 0) + 1;
+      }
+      const cleaned = [];
+      let invalidCount = 0;
+      for (const t of topics) {
+        const sec = parseTime(t.timestamp);
+        if (!Number.isFinite(sec) || sec < -5 || sec > totalDuration + 300) {
+          invalidCount++;
+          console.warn(`[\u5168\u5C40\u6821\u9A8C] \u4E22\u5F03\u975E\u6CD5\u65F6\u95F4\u6233\u6761\u76EE: ${JSON.stringify(t.timestamp)} | ${t.title}`);
+          continue;
+        }
+        cleaned.push({ ...t, timestamp: formatTime(Math.max(0, sec)) });
+      }
+      const outTsCount = {};
+      for (const t of cleaned)
+        outTsCount[t.timestamp] = (outTsCount[t.timestamp] || 0) + 1;
+      let collapsed = null;
+      for (const [ts, n] of Object.entries(outTsCount)) {
+        const pn = prelimTsCount[ts] || 0;
+        if (n >= 5 && n >= pn + 3) {
+          collapsed = `${ts}\xD7${n}\uFF08\u521D\u6B65\u7ED3\u679C ${pn} \u6B21\uFF09`;
+          break;
+        }
+      }
+      if (cleaned.length === 0 || collapsed || invalidCount >= 5) {
+        const reason = collapsed ? `\u65F6\u95F4\u6233\u584C\u9677 ${collapsed}` : invalidCount >= 5 ? `\u975E\u6CD5\u65F6\u95F4\u6233 ${invalidCount} \u6761` : "\u6E05\u6D17\u540E\u65E0\u6709\u6548\u6761\u76EE";
+        console.warn(`[\u5168\u5C40\u6821\u9A8C] \u8F93\u51FA\u5F02\u5E38\uFF08${reason}\uFF09\uFF0C\u653E\u5F03\u672C\u6B21\u7ED3\u679C\uFF0C\u4FDD\u7559\u521D\u6B65\u7B14\u8BB0`);
+        notice.setMessage("\u26A0\uFE0F \u5168\u5C40\u6821\u9A8C\u8F93\u51FA\u5F02\u5E38\uFF0C\u5DF2\u4FDD\u7559\u521D\u6B65\u7ED3\u679C");
+        setTimeout(() => notice.hide(), 4e3);
+        return;
+      }
+      topics = cleaned.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
       this.allChapterSummaries = topics;
       let currentTopicIndex = 0;
       for (let i = 0; i < jobs.length; i++) {
@@ -4599,7 +4839,7 @@ ${kps}`;
       const noteFile = targetLeaf.view.file;
       let docContent = "";
       let useFileIO = false;
-      if (noteFile instanceof import_obsidian5.TFile) {
+      if (noteFile instanceof import_obsidian6.TFile) {
         try {
           docContent = await this.app.vault.read(noteFile);
           useFileIO = true;
@@ -4652,7 +4892,7 @@ ${metaData.exam_focus}
       modified = true;
       console.log("[META] \u5DF2\u5728\u5C3E\u90E8\u63D2\u5165\u8001\u5E08\u5F3A\u8C03\u548C\u4F8B\u9898\u65B9\u6CD5");
       if (modified) {
-        if (useFileIO && noteFile instanceof import_obsidian5.TFile) {
+        if (useFileIO && noteFile instanceof import_obsidian6.TFile) {
           await this.app.vault.modify(noteFile, docContent);
           await sleep(50);
           try {
@@ -4680,7 +4920,7 @@ ${metaData.exam_focus}
     report.endTime = /* @__PURE__ */ new Date();
     const durationSeconds = Math.floor((report.endTime.getTime() - report.startTime.getTime()) / 1e3);
     report.successBatches = report.totalBatches - report.failedBatches;
-    const loadingNotice = new import_obsidian5.Notice("\u{1F4CB} \u6B63\u5728\u751F\u6210\u4EFB\u52A1\u5B8C\u6210\u62A5\u544A...", 0);
+    const loadingNotice = new import_obsidian6.Notice("\u{1F4CB} \u6B63\u5728\u751F\u6210\u4EFB\u52A1\u5B8C\u6210\u62A5\u544A...", 0);
     try {
       const currentContent = await this.app.vault.read(noteFile);
       const reportContent = await generateTaskReport({
@@ -4703,22 +4943,22 @@ ${metaData.exam_focus}
       await this.app.vault.modify(noteFile, currentContent + reportContent);
       console.log("\u2705 \u4EFB\u52A1\u5B8C\u6210\u62A5\u544A\u5DF2\u751F\u6210");
       console.log(`\u{1F4CA} \u62A5\u544A\u957F\u5EA6: ${reportContent.length} \u5B57\u7B26`);
-      new import_obsidian5.Notice("\u2705 \u4EFB\u52A1\u5B8C\u6210\u62A5\u544A\u5DF2\u8FFD\u52A0\u5230\u7B14\u8BB0\u672B\u5C3E", 5e3);
+      new import_obsidian6.Notice("\u2705 \u4EFB\u52A1\u5B8C\u6210\u62A5\u544A\u5DF2\u8FFD\u52A0\u5230\u7B14\u8BB0\u672B\u5C3E", 5e3);
     } catch (e) {
       loadingNotice.hide();
       console.error("\u751F\u6210\u4EFB\u52A1\u62A5\u544A\u5931\u8D25:", e);
-      new import_obsidian5.Notice("\u274C \u4EFB\u52A1\u62A5\u544A\u751F\u6210\u5931\u8D25", 3e3);
+      new import_obsidian6.Notice("\u274C \u4EFB\u52A1\u62A5\u544A\u751F\u6210\u5931\u8D25", 3e3);
     }
   }
   /**
    * 运行单个批次的 AI 分析
    */
   async runBatchAnalysis(job, fileName, editor, targetLeaf, providerIdx) {
-    var _a;
+    var _a, _b, _c;
     const provider = LLM_PROVIDERS[providerIdx];
     const startTime = job.segments[0].start;
     const endTime = job.segments[job.segments.length - 1].end;
-    const notice = new import_obsidian5.Notice(`\u23F3 [\u6279\u6B21 ${job.batchIndex + 1}] \u521D\u59CB\u5316\u4E2D...`, 0);
+    const notice = new import_obsidian6.Notice(`\u23F3 [\u6279\u6B21 ${job.batchIndex + 1}] \u521D\u59CB\u5316\u4E2D...`, 0);
     const anchorId = job.anchorId;
     const startMarker = `%%${anchorId}_START%%`;
     const endMarker = `%%${anchorId}_END%%`;
@@ -4810,6 +5050,7 @@ ${job.incomingLeftover}
         console.error(failMsg);
         notice.setMessage(failMsg);
         this.markBatchAsFailed(job, editor, targetLeaf, "AI \u8FD4\u56DE\u7A7A\u6570\u636E");
+        this.batchWriteStatus.set(job.batchIndex, { success: false, retryCount: 0, lastError: "AI \u54CD\u5E94\u4E3A\u7A7A" });
         if (this.currentTaskReport) {
           this.currentTaskReport.failedBatches++;
           this.currentTaskReport.errorLog.push(`\u6279\u6B21 ${job.batchIndex + 1}: AI \u54CD\u5E94\u4E3A\u7A7A`);
@@ -4818,14 +5059,42 @@ ${job.incomingLeftover}
         return false;
       }
       notice.setMessage(`\u2699\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] AI \u8017\u65F6 ${aiDuration}s\uFF0C\u6B63\u5728\u6392\u5E8F\u4E0E\u6E05\u6D17\u6570\u636E...`);
-      topics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
+      const acceptedTopics = [];
+      for (const topic of topics) {
+        const topicSec = parseTime(topic.timestamp);
+        if (!Number.isFinite(topicSec)) {
+          console.warn(`[\u6279\u6B21 ${job.batchIndex + 1}] \u4E22\u5F03\u65E0\u6CD5\u89E3\u6790\u7684\u65F6\u95F4\u6233: ${JSON.stringify(topic.timestamp)} | ${topic.title}`);
+          continue;
+        }
+        if (topicSec >= startTime - 5 && topicSec <= endTime + 300) {
+          acceptedTopics.push({ ...topic, timestamp: formatTime(topicSec) });
+          continue;
+        }
+        const mmss = (topicSec % 3600 + 3600) % 3600;
+        let fixed = -1;
+        for (let h = 0; h <= 8; h++) {
+          const cand = h * 3600 + mmss;
+          if (cand >= startTime - 5 && cand <= endTime + 300) {
+            fixed = cand;
+            break;
+          }
+        }
+        if (fixed < 0) {
+          const rel = topicSec + startTime;
+          if (rel >= startTime - 5 && rel <= endTime + 300)
+            fixed = rel;
+        }
+        if (fixed < 0) {
+          console.warn(`[\u6279\u6B21 ${job.batchIndex + 1}] \u4E22\u5F03\u8D8A\u754C\u65F6\u95F4\u6233: ${topic.timestamp}`);
+          continue;
+        }
+        console.warn(`[\u6279\u6B21 ${job.batchIndex + 1}] \u65F6\u95F4\u6233\u4FEE\u6B63: ${topic.timestamp} \u2192 ${formatTime(fixed)}`);
+        acceptedTopics.push({ ...topic, timestamp: formatTime(fixed) });
+      }
+      acceptedTopics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
       let finalContent = "";
       let newHistory = "";
-      for (let t = 0; t < topics.length; t++) {
-        const topic = topics[t];
-        const topicSec = parseTime(topic.timestamp);
-        if (topicSec < startTime - 5)
-          continue;
+      for (const topic of acceptedTopics) {
         finalContent += `#### \u23F1\uFE0F ${topic.timestamp} ${topic.title}  \u{1F3AC} [[${fileName}#t=${topic.timestamp}|${topic.timestamp}]]
 `;
         if (topic.key_points && topic.key_points.length > 0) {
@@ -4856,6 +5125,18 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
         });
       }
       this.historySummaries += newHistory;
+      if (!finalContent || finalContent.trim().length === 0) {
+        console.error(`[\u6279\u6B21 ${job.batchIndex + 1}] AI \u8F93\u51FA\u4E3A\u7A7A\uFF08\u4E3B\u9898\u5168\u90E8\u88AB\u65F6\u95F4\u6233\u8FC7\u6EE4\uFF09\uFF0C\u4FDD\u7559\u539F\u59CB\u8F6C\u5199`);
+        await this.markBatchAsFailed(job, editor, targetLeaf, "AI \u8F93\u51FA\u4E3B\u9898\u5168\u90E8\u88AB\u8FC7\u6EE4");
+        if (this.currentTaskReport) {
+          this.currentTaskReport.failedBatches++;
+          this.currentTaskReport.errorLog.push(`\u6279\u6B21 ${job.batchIndex + 1}: AI \u8F93\u51FA\u4E3B\u9898\u5168\u90E8\u88AB\u8FC7\u6EE4`);
+        }
+        this.batchWriteStatus.set(job.batchIndex, { success: false, retryCount: 0, lastError: "AI \u8F93\u51FA\u4E3A\u7A7A" });
+        notice.setMessage(`\u26A0\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] AI \u8F93\u51FA\u4E3A\u7A7A\uFF0C\u5DF2\u4FDD\u7559\u539F\u59CB\u8F6C\u5199`);
+        setTimeout(() => notice.hide(), 3e3);
+        return false;
+      }
       notice.setMessage(`\u270D\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] \u5199\u5165\u6587\u6863 (2/3)...`);
       const writeSuccess = await this.safeEditorReplace(
         editor,
@@ -4865,21 +5146,52 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
         job.batchIndex + 1,
         notice
       );
+      if (!writeSuccess)
+        this.batchContentCache.set(job.anchorId, finalContent);
+      let batchOk = false;
       if (writeSuccess) {
-        this.batchWriteStatus.set(job.batchIndex, { success: true, retryCount: 0 });
-        await this.verifyAndRepairInsertion(editor, targetLeaf, job.anchorId, finalContent, job.batchIndex + 1, notice);
-        notice.setMessage(`\u2705 [\u6279\u6B21 ${job.batchIndex + 1}] \u5904\u7406\u5B8C\u6210\uFF01(3/3)`);
+        const verified = await this.verifyAndRepairInsertion(editor, targetLeaf, job.anchorId, finalContent, job.batchIndex + 1, notice);
+        if (verified) {
+          batchOk = true;
+          this.batchWriteStatus.set(job.batchIndex, { success: true, retryCount: 0 });
+          if ((_b = this.currentCheckpoint) == null ? void 0 : _b.batches[job.batchIndex]) {
+            this.currentCheckpoint.batches[job.batchIndex] = {
+              done: true,
+              segments: job.segments,
+              content: finalContent
+            };
+            this.saveCheckpoint(this.currentCheckpoint);
+          }
+          notice.setMessage(`\u2705 [\u6279\u6B21 ${job.batchIndex + 1}] \u5904\u7406\u5B8C\u6210\uFF01(3/3)`);
+        } else {
+          this.batchWriteStatus.set(job.batchIndex, {
+            success: false,
+            retryCount: 1,
+            lastError: "\u5199\u5165\u540E\u5185\u5BB9\u4E22\u5931\u4E14\u8865\u5199\u5931\u8D25"
+          });
+          this.batchContentCache.set(job.anchorId, finalContent);
+          if ((_c = this.currentCheckpoint) == null ? void 0 : _c.batches[job.batchIndex]) {
+            this.currentCheckpoint.batches[job.batchIndex] = {
+              done: false,
+              segments: job.segments,
+              content: finalContent
+            };
+            this.saveCheckpoint(this.currentCheckpoint);
+          }
+          console.warn(`[\u6279\u6B21 ${job.batchIndex + 1}] \u26A0\uFE0F \u5199\u5165\u540E\u5185\u5BB9\u4E22\u5931\u4E14\u8865\u5199\u5931\u8D25\uFF0C\u5DF2\u7F13\u5B58\u5F85\u515C\u5E95\u5DE1\u68C0`);
+          notice.setMessage(`\u26A0\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] \u5185\u5BB9\u672A\u4FDD\u4F4F\uFF08\u5DF2\u7F13\u5B58\uFF0C\u5F85\u515C\u5E95\u5DE1\u68C0\uFF09`);
+        }
       } else {
         this.batchWriteStatus.set(job.batchIndex, {
           success: false,
-          retryCount: 3,
+          retryCount: 1,
           lastError: "\u951A\u70B9\u4E22\u5931\u6216\u5199\u5165\u5931\u8D25"
         });
         this.batchContentCache.set(job.anchorId, finalContent);
-        notice.setMessage(`\u26A0\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] \u5199\u5165\u5931\u8D25\uFF1A\u951A\u70B9\u4E22\u5931`);
+        notice.setMessage(`\u26A0\uFE0F [\u6279\u6B21 ${job.batchIndex + 1}] \u5199\u5165\u5931\u8D25\uFF1A\u951A\u70B9\u4E22\u5931\uFF08\u5DF2\u7F13\u5B58\uFF0C\u7A0D\u540E\u515C\u5E95\u8865\u5199\uFF09`);
       }
       setTimeout(() => notice.hide(), 2e3);
-      return true;
+      return batchOk;
     } catch (e) {
       console.error(e);
       this.batchWriteStatus.set(job.batchIndex, {
@@ -4908,11 +5220,15 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
   async safeEditorReplace(editor, targetLeaf, anchorId, newContent, batchIndex, notice) {
     const startMarker = `%%${anchorId}_START%%`;
     const endMarker = `%%${anchorId}_END%%`;
-    const maxRetries = 3;
+    const maxRetries = 2;
+    if (!newContent || newContent.trim().length === 0) {
+      console.warn(`[\u6279\u6B21 ${batchIndex}] \u62D2\u7EDD\u5199\u5165\u7A7A\u5185\u5BB9\uFF0C\u4FDD\u7559\u539F\u6BB5\u843D`);
+      return false;
+    }
     const getNoteFile = () => {
       try {
         const view = targetLeaf.view;
-        if (view && view.file instanceof import_obsidian5.TFile) {
+        if (view && view.file instanceof import_obsidian6.TFile) {
           return view.file;
         }
       } catch (e) {
@@ -4925,7 +5241,7 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
           const noteFile = getNoteFile();
           let docContent = "";
           let useFileIO = false;
-          if (noteFile instanceof import_obsidian5.TFile) {
+          if (noteFile instanceof import_obsidian6.TFile) {
             try {
               docContent = await this.app.vault.read(noteFile);
               useFileIO = true;
@@ -4939,7 +5255,7 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
           let startIndex = docContent.indexOf(startMarker);
           let endIndex = docContent.indexOf(endMarker);
           if (startIndex === -1 || endIndex === -1) {
-            if (noteFile instanceof import_obsidian5.TFile && useFileIO) {
+            if (noteFile instanceof import_obsidian6.TFile && useFileIO) {
               try {
                 docContent = await this.app.vault.read(noteFile);
               } catch (e) {
@@ -4958,7 +5274,7 @@ ${historyDetail ? `\u63CF\u8FF0: ${historyDetail}
           const newDocContent = docContent.substring(0, startIndex) + `${startMarker}
 ${newContent}
 ${endMarker}` + docContent.substring(endIndex + endMarker.length);
-          if (useFileIO && noteFile instanceof import_obsidian5.TFile) {
+          if (useFileIO && noteFile instanceof import_obsidian6.TFile) {
             await this.app.vault.modify(noteFile, newDocContent);
             await sleep(50);
             try {
@@ -4992,7 +5308,7 @@ ${endMarker}`, startPos, endPos);
               console.log(`[\u66FF\u6362] \u6279\u6B21 ${batchIndex} \u66FF\u6362\u6210\u529F\u5E76\u9A8C\u8BC1\u901A\u8FC7\uFF08\u7F16\u8F91\u5668\uFF09`);
             }
           }
-          if (!verifySuccess && result.noteFile instanceof import_obsidian5.TFile) {
+          if (!verifySuccess && result.noteFile instanceof import_obsidian6.TFile) {
             try {
               const verifyDiskContent = await this.app.vault.read(result.noteFile);
               const diskStart = verifyDiskContent.indexOf(startMarker);
@@ -5054,7 +5370,7 @@ ${endMarker}`, startPos, endPos);
       let diskContent = "";
       let diskOk = false;
       const noteFile = targetLeaf.view.file;
-      if (noteFile instanceof import_obsidian5.TFile) {
+      if (noteFile instanceof import_obsidian6.TFile) {
         try {
           diskContent = await this.app.vault.read(noteFile);
           diskOk = sectionHasContent(diskContent);
@@ -5101,13 +5417,14 @@ ${endMarker}`, startPos, endPos);
   /**
    * 🛡️ 绘图前兜底巡检：逐一核对每个分块锚点区间，内容为空或仍是占位提示时，
    * 用内存缓存（batchContentCache）中的 AI 生成内容补写——不触发任何重新生成。
-   * 无缓存且缺失的批次只告警，不阻塞思维导图生成。
+   * @returns true = 所有分块都已确认有内容；false = 存在锚点缺失或无缓存可真失败的缺失分块，
+   *          调用方应暂停任务并报出错误详情，而不是带着缺失分块假装成功。
    */
   async ensureAllSectionsWritten(editor, targetLeaf, totalChunks, fileName) {
     const noteFile = targetLeaf.view.file;
-    if (!(noteFile instanceof import_obsidian5.TFile)) {
+    if (!(noteFile instanceof import_obsidian6.TFile)) {
       console.warn("[\u515C\u5E95\u5DE1\u68C0] \u65E0\u6CD5\u83B7\u53D6\u7B14\u8BB0\u6587\u4EF6\uFF0C\u8DF3\u8FC7\u5DE1\u68C0");
-      return;
+      return false;
     }
     const unrepaired = [];
     try {
@@ -5120,8 +5437,11 @@ ${endMarker}`, startPos, endPos);
           const endMarker = `%%${anchorId}_END%%`;
           const s = content.indexOf(startMarker);
           const e = content.indexOf(endMarker);
-          if (s === -1 || e === -1 || e < s)
+          if (s === -1 || e === -1 || e < s) {
+            console.warn(`[\u515C\u5E95\u5DE1\u68C0] \u6279\u6B21 ${i + 1} \u951A\u70B9\u7F3A\u5931 (${anchorId})`);
+            unrepaired.push(i + 1);
             continue;
+          }
           const section = content.substring(s + startMarker.length, e).trim();
           const cached = this.batchContentCache.get(anchorId);
           const isEmpty = section.length === 0;
@@ -5137,23 +5457,25 @@ ${endMarker}`, startPos, endPos);
         return list;
       });
       for (const r of repairs) {
-        console.warn(`[\u515C\u5E95\u5DE1\u68C0] \u6279\u6B21 ${r.batchIndex} \u5185\u5BB9\u7F3A\u5931\uFF0C\u4F7F\u7528\u5185\u5B58\u7F13\u5B58\u8865\u5199 (anchor=${r.anchorId})`);
+        console.warn(`[\u515C\u5E95\u5DE1\u68C0] \u6279\u6B21 ${r.batchIndex} \u5185\u5BB9\u7F3A\u5931\uFF0C\u7528\u5185\u5B58\u7F13\u5B58\u8865\u5199 (anchor=${r.anchorId})`);
         const ok = await this.safeEditorReplace(editor, targetLeaf, r.anchorId, r.content, r.batchIndex);
         if (!ok)
           unrepaired.push(r.batchIndex);
       }
       if (repairs.length > 0) {
-        new import_obsidian5.Notice(`\u{1F6E1}\uFE0F \u7ED8\u56FE\u524D\u5DE1\u68C0\uFF1A\u5DF2\u81EA\u52A8\u8865\u5199 ${repairs.length} \u4E2A\u7F3A\u5931\u5206\u5757`, 5e3);
+        new import_obsidian6.Notice(`\u{1F6E1}\uFE0F \u7ED8\u56FE\u524D\u5DE1\u68C0\uFF1A\u5DF2\u81EA\u52A8\u8865\u5199 ${repairs.length} \u4E2A\u7F3A\u5931\u5206\u5757`, 5e3);
       }
       if (unrepaired.length > 0) {
         console.error(`[\u515C\u5E95\u5DE1\u68C0] \u7B2C ${unrepaired.join("\u3001")} \u90E8\u5206\u5185\u5BB9\u7F3A\u5931\uFF0C\u672A\u80FD\u81EA\u52A8\u6062\u590D`);
         if (this.currentTaskReport) {
           this.currentTaskReport.errorLog.push(`\u515C\u5E95\u5DE1\u68C0: \u7B2C ${unrepaired.join("\u3001")} \u90E8\u5206\u5185\u5BB9\u7F3A\u5931\uFF0C\u672A\u80FD\u81EA\u52A8\u6062\u590D`);
         }
-        new import_obsidian5.Notice(`\u26A0\uFE0F \u7B2C ${unrepaired.join("\u3001")} \u90E8\u5206\u5185\u5BB9\u7F3A\u5931\uFF0C\u672A\u80FD\u81EA\u52A8\u6062\u590D`, 8e3);
+        new import_obsidian6.Notice(`\u26A0\uFE0F \u7B2C ${unrepaired.join("\u3001")} \u90E8\u5206\u5185\u5BB9\u7F3A\u5931\uFF0C\u672A\u80FD\u81EA\u52A8\u6062\u590D`, 8e3);
       }
+      return unrepaired.length === 0;
     } catch (e) {
       console.warn("[\u515C\u5E95\u5DE1\u68C0] \u5DE1\u68C0\u5F02\u5E38\uFF08\u4E0D\u5F71\u54CD\u540E\u7EED\u7ED8\u56FE\uFF09:", e);
+      return false;
     }
   }
   /**
@@ -5171,7 +5493,7 @@ ${originalRaw}
 ${endMarker}`;
     try {
       const noteFile = targetLeaf.view.file;
-      if (noteFile instanceof import_obsidian5.TFile) {
+      if (noteFile instanceof import_obsidian6.TFile) {
         await this.withFileLock(async () => {
           const fileContent = await this.app.vault.read(noteFile);
           const startIndex = fileContent.indexOf(startMarker);
@@ -5200,6 +5522,353 @@ ${endMarker}`;
     }
   }
   /**
+   * ⏸️ 暂停转写并报出错误详情
+   * 用于「确实处理不了的错误」：连续失败达到阈值，或兜底巡检仍无法修复的缺失分块。
+   * 在笔记末尾写入醒目的 danger 块、显示常驻 Notice、保存断点，供用户修复后「继续转写」。
+   */
+  async pauseTranscriptionWithError(file, editor, targetLeaf, totalChunks) {
+    var _a, _b;
+    const failed = /* @__PURE__ */ new Set();
+    this.batchWriteStatus.forEach((s, idx) => {
+      if (s.success === false)
+        failed.add(idx + 1);
+    });
+    for (let i = 0; i < totalChunks; i++) {
+      if (!this.batchWriteStatus.has(i))
+        failed.add(i + 1);
+    }
+    const errors = ((_b = (_a = this.currentTaskReport) == null ? void 0 : _a.errorLog) != null ? _b : []).slice(-20);
+    const failedList = [...failed].sort((a, b) => a - b).map((n) => `\u7B2C ${n} \u90E8\u5206`).join("\u3001") || "(\u672A\u77E5)";
+    const pauseBlock = `
+
+> [!danger] \u23F8\uFE0F \u8F6C\u5199\u4EFB\u52A1\u5DF2\u6682\u505C\uFF08${(/* @__PURE__ */ new Date()).toLocaleString()}\uFF09
+> \u89C6\u9891\uFF1A${file.basename}
+> \u672A\u5B8C\u6210 / \u5931\u8D25\u5206\u5757\uFF1A${failedList}
+> 
+> \u9519\u8BEF\u8BE6\u60C5\uFF1A
+` + (errors.length ? errors.map((l) => `>   ${l}`).join("\n") : `>   (\u65E0\u8BE6\u7EC6\u9519\u8BEF)`);
+    if (this.currentCheckpoint)
+      this.saveCheckpoint(this.currentCheckpoint);
+    try {
+      const noteFile = targetLeaf.view.file;
+      if (noteFile instanceof import_obsidian6.TFile) {
+        await this.withFileLock(async () => {
+          const current = await this.app.vault.read(noteFile);
+          if (current.includes(`\u672A\u5B8C\u6210 / \u5931\u8D25\u5206\u5757\uFF1A${failedList}`)) {
+            console.log("[\u6682\u505C] \u7B14\u8BB0\u4E2D\u5DF2\u5B58\u5728\u76F8\u540C\u7684\u6682\u505C\u8BF4\u660E\uFF0C\u8DF3\u8FC7\u91CD\u590D\u5199\u5165");
+            return;
+          }
+          await this.app.vault.modify(noteFile, current + pauseBlock);
+        });
+      } else {
+        editor.setValue(editor.getValue() + pauseBlock);
+      }
+    } catch (e) {
+      console.error("[\u6682\u505C] \u5199\u5165\u6682\u505C\u6807\u8BB0\u5931\u8D25:", e);
+    }
+    new import_obsidian6.Notice(
+      `\u23F8\uFE0F \u8F6C\u5199\u5DF2\u6682\u505C\uFF1A${failedList} \u5931\u8D25\u3002\u4FEE\u590D\u540E\u6267\u884C\u300C\u25B6\uFE0F \u7EE7\u7EED\u8F6C\u5199\uFF08\u65AD\u70B9\u7EED\u8DD1\uFF09\u300D\u5373\u53EF\u4ECE\u5DF2\u5B8C\u6210\u8FDB\u5EA6\u7EE7\u7EED\uFF0C\u65E0\u9700\u91CD\u505A`,
+      0
+    );
+    console.error("[\u6682\u505C] \u81F4\u547D\u9519\u8BEF\uFF0C\u4EFB\u52A1\u5DF2\u6682\u505C\u3002\u5931\u8D25\u5206\u5757:", failedList, "\u9519\u8BEF:", errors);
+  }
+  /**
+   * ▶️ 继续转写（断点续跑）：从最新的断点检查点恢复，
+   * 跳过已完成的分块，只补做缺失的 ASR 转写与 LLM 总结，避免重复已完成的工作。
+   */
+  async resumeFromCheckpoint() {
+    var _a, _b, _c, _d, _e, _f;
+    const candidates = this.listCheckpoints();
+    if (candidates.length === 0) {
+      new import_obsidian6.Notice("\u2139\uFE0F \u6CA1\u6709\u627E\u5230\u53EF\u7EED\u8DD1\u7684\u65AD\u70B9");
+      return;
+    }
+    const { checkpoint } = candidates[0];
+    if (typeof checkpoint.videoPath !== "string" || !checkpoint.videoPath || typeof checkpoint.totalChunks !== "number" || checkpoint.totalChunks <= 0 || typeof checkpoint.duration !== "number" || checkpoint.duration <= 0) {
+      console.error("[\u65AD\u70B9] \u68C0\u67E5\u70B9\u5185\u5BB9\u4E0D\u5B8C\u6574\uFF0C\u5DF2\u8DF3\u8FC7:", candidates[0].filePath, checkpoint);
+      new import_obsidian6.Notice("\u274C \u65AD\u70B9\u6587\u4EF6\u5185\u5BB9\u4E0D\u5B8C\u6574\uFF0C\u65E0\u6CD5\u7EED\u8DD1");
+      return;
+    }
+    if (!Array.isArray(checkpoint.batches))
+      checkpoint.batches = [];
+    while (checkpoint.batches.length < checkpoint.totalChunks)
+      checkpoint.batches.push({ done: false });
+    const resumedName = checkpoint.videoPath.split("/").pop() || checkpoint.videoPath;
+    console.log(`[\u65AD\u70B9] \u51C6\u5907\u7EED\u8DD1: ${resumedName} | \u6587\u4EF6: ${candidates[0].filePath}`);
+    new import_obsidian6.Notice(`\u25B6\uFE0F \u7EE7\u7EED\u8F6C\u5199: ${resumedName}`, 4e3);
+    const videoFile = this.app.vault.getAbstractFileByPath(checkpoint.videoPath);
+    const noteFile = this.app.vault.getAbstractFileByPath(checkpoint.notePath);
+    if (!(videoFile instanceof import_obsidian6.TFile) || !(noteFile instanceof import_obsidian6.TFile)) {
+      new import_obsidian6.Notice("\u274C \u65AD\u70B9\u5BF9\u5E94\u7684\u89C6\u9891/\u7B14\u8BB0\u5DF2\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u7EED\u8DD1");
+      return;
+    }
+    if (this.isProcessing) {
+      new import_obsidian6.Notice("\u23F3 \u5DF2\u6709\u8F6C\u5199\u4EFB\u52A1\u5728\u8FDB\u884C\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
+      return;
+    }
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof import_obsidian6.FileSystemAdapter)) {
+      new import_obsidian6.Notice("\u975E\u684C\u9762\u73AF\u5883\u4E0D\u53EF\u7528");
+      return;
+    }
+    this.ffmpegPath = path2.join(adapter.getBasePath(), (_a = this.manifest.dir) != null ? _a : "", "ffmpeg.exe");
+    if (!fs2.existsSync(this.ffmpegPath)) {
+      new import_obsidian6.Notice("\u627E\u4E0D\u5230 ffmpeg.exe");
+      return;
+    }
+    this.isProcessing = true;
+    this.currentTranscribingNotePath = noteFile.path;
+    let editor;
+    let leaf;
+    try {
+      await this.openNoteInRightSidebar(noteFile);
+      await sleep(500);
+      let targetLeaf = null;
+      this.app.workspace.iterateAllLeaves((l) => {
+        const f = l.view.file;
+        if (f && f.path === noteFile.path && l.view instanceof import_obsidian6.MarkdownView)
+          targetLeaf = l;
+      });
+      if (!targetLeaf) {
+        const { leaf: newLeaf } = await this.openTranscriptNote(videoFile);
+        targetLeaf = newLeaf;
+        await sleep(300);
+      }
+      if (!targetLeaf || !(targetLeaf.view instanceof import_obsidian6.MarkdownView)) {
+        throw new Error("\u672A\u80FD\u83B7\u5F97\u53EF\u7F16\u8F91\u7684\u7B14\u8BB0\u89C6\u56FE");
+      }
+      editor = targetLeaf.view.editor;
+      leaf = targetLeaf;
+    } catch (e) {
+      console.error("[\u65AD\u70B9] \u6253\u5F00\u7B14\u8BB0\u5931\u8D25:", e);
+      new import_obsidian6.Notice(`\u274C \u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\uFF0C\u65E0\u6CD5\u7EE7\u7EED\u8F6C\u5199: ${errorMessage(e)}`);
+      this.isProcessing = false;
+      this.currentTranscribingNotePath = null;
+      return;
+    }
+    this.historySummaries = (_b = checkpoint.historySummaries) != null ? _b : "";
+    this.allChapterSummaries = [...(_c = checkpoint.allChapterSummaries) != null ? _c : []];
+    this.batchContentCache.clear();
+    this.batchWriteStatus.clear();
+    this.currentCheckpoint = checkpoint;
+    this.currentTaskReport = {
+      videoFileName: videoFile.name,
+      totalDuration: checkpoint.duration,
+      totalBatches: checkpoint.totalChunks,
+      successBatches: 0,
+      failedBatches: 0,
+      apiUsageLog: [],
+      errorLog: [],
+      llmCallRecords: [],
+      globalAnalysisSuccess: false,
+      mindmapSuccess: false,
+      startTime: /* @__PURE__ */ new Date(),
+      endTime: /* @__PURE__ */ new Date()
+    };
+    try {
+      const totalChunks = checkpoint.totalChunks;
+      const inputPath = path2.join(adapter.getBasePath(), videoFile.path);
+      const allBatchJobs = new Array(totalChunks);
+      this.allBatchJobsRef = allBatchJobs;
+      const noteText = await this.app.vault.read(noteFile);
+      const sectionState = (anchorId) => {
+        const startMarker = `%%${anchorId}_START%%`;
+        const endMarker = `%%${anchorId}_END%%`;
+        const s = noteText.indexOf(startMarker);
+        const e = noteText.indexOf(endMarker);
+        if (s === -1 || e === -1 || e < s)
+          return "missing";
+        const sec = noteText.substring(s + startMarker.length, e).trim();
+        if (sec.length === 0)
+          return "empty";
+        if (sec.startsWith(">") && sec.includes("\u23F3"))
+          return "empty";
+        return "ok";
+      };
+      const doneFlags = [];
+      const hasSegments = [];
+      const rewriteOnly = [];
+      const anchorMissing = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const b = (_d = checkpoint.batches) == null ? void 0 : _d[i];
+        const anchorId = `BATCH_${i}`;
+        const inNote = sectionState(anchorId);
+        const cached = (b == null ? void 0 : b.content) && b.content.trim() ? b.content : "";
+        if (cached)
+          this.batchContentCache.set(anchorId, cached);
+        if (inNote === "missing")
+          anchorMissing.push(i + 1);
+        if ((b == null ? void 0 : b.done) === true && inNote === "ok") {
+          doneFlags[i] = true;
+        } else {
+          doneFlags[i] = false;
+          if (cached && inNote !== "missing")
+            rewriteOnly.push(i);
+        }
+        hasSegments[i] = !!((b == null ? void 0 : b.segments) && b.segments.length > 0);
+        allBatchJobs[i] = { segments: (_e = b == null ? void 0 : b.segments) != null ? _e : [], batchIndex: i, anchorId };
+      }
+      doneFlags.forEach((d, i) => {
+        if (d)
+          this.batchWriteStatus.set(i, { success: true, retryCount: 0 });
+      });
+      if (anchorMissing.length > 0) {
+        console.error(`[\u65AD\u70B9] \u6279\u6B21 ${anchorMissing.join("\u3001")} \u7684\u951A\u70B9\u5DF2\u5728\u7B14\u8BB0\u4E2D\u6D88\u5931\uFF0C\u65E0\u6CD5\u7EED\u8DD1`);
+        new import_obsidian6.Notice(`\u274C \u7B2C ${anchorMissing.join("\u3001")} \u90E8\u5206\u951A\u70B9\u7F3A\u5931\uFF0C\u65E0\u6CD5\u5199\u5165\uFF1B\u5EFA\u8BAE\u91CD\u8DD1\u300C\u{1F4DD} \u667A\u80FD\u8F6C\u5199\u300D`, 0);
+        return;
+      }
+      const toDo = [];
+      for (let i = 0; i < totalChunks; i++)
+        if (!doneFlags[i] && !rewriteOnly.includes(i))
+          toDo.push(i);
+      for (const i of rewriteOnly) {
+        const content = checkpoint.batches[i].content;
+        const ok = await this.safeEditorReplace(editor, leaf, `BATCH_${i}`, content, i + 1);
+        if (ok) {
+          this.batchWriteStatus.set(i, { success: true, retryCount: 0 });
+          checkpoint.batches[i] = { done: true, segments: (_f = checkpoint.batches[i]) == null ? void 0 : _f.segments, content };
+          this.saveCheckpoint(checkpoint);
+          console.log(`[\u7EED\u8DD1] \u6279\u6B21 ${i + 1} \u7528\u65AD\u70B9\u7F13\u5B58\u8865\u5199\u6210\u529F\uFF08\u672A\u91CD\u8DD1 ASR/LLM\uFF09`);
+        } else {
+          this.batchWriteStatus.set(i, { success: false, retryCount: 1, lastError: "\u65AD\u70B9\u7F13\u5B58\u8865\u5199\u5931\u8D25" });
+          if (this.currentTaskReport) {
+            this.currentTaskReport.failedBatches++;
+            this.currentTaskReport.errorLog.push(`\u7EED\u8DD1 \u6279\u6B21 ${i + 1}: \u65AD\u70B9\u7F13\u5B58\u8865\u5199\u5931\u8D25`);
+          }
+        }
+      }
+      if (toDo.length === 0) {
+        if (rewriteOnly.length === 0) {
+          new import_obsidian6.Notice("\u2139\uFE0F \u8BE5\u65AD\u70B9\u5DF2\u5B8C\u6210\uFF0C\u65E0\u9700\u7EED\u8DD1");
+          this.clearCheckpoint(videoFile.path);
+          return;
+        }
+        new import_obsidian6.Notice(`\u2139\uFE0F \u65AD\u70B9\u5185\u5BB9\u5DF2\u8865\u5199 ${rewriteOnly.length} \u4E2A\u5206\u5757\uFF0C\u8FDB\u5165\u5168\u5C40\u6821\u9A8C`);
+      }
+      const apiKeys = ASR_CONFIG.API_KEYS && ASR_CONFIG.API_KEYS.length > 0 ? ASR_CONFIG.API_KEYS : [ASR_CONFIG.API_KEY];
+      const maxConcurrent = Math.max(1, apiKeys.length * 2);
+      const needAsr = toDo.filter((i) => !hasSegments[i]);
+      let asrCursor = 0;
+      const asrWorker = async (workerId) => {
+        const apiKey = apiKeys[workerId % apiKeys.length];
+        while (true) {
+          const idx = asrCursor++;
+          if (idx >= needAsr.length)
+            break;
+          const i = needAsr[idx];
+          const chunkStart = i * PROCESSING_CONFIG.CHUNK_SIZE;
+          const isLastChunk = i === totalChunks - 1;
+          const chunkDuration = isLastChunk ? checkpoint.duration - chunkStart + 5 : PROCESSING_CONFIG.CHUNK_SIZE;
+          const prefix = `[${i + 1}/${totalChunks}]`;
+          const progressNotice = new import_obsidian6.Notice(`${prefix} \u23F3 \u7EED\u8DD1\uFF1A\u63D0\u53D6\u97F3\u9891...`, 0);
+          try {
+            const mp3Buffer = await convertChunkToMp3(this.ffmpegPath, inputPath, chunkStart, chunkDuration, progressNotice, prefix);
+            const asrJson = await uploadToASR(mp3Buffer, `${videoFile.basename}_p${i}.mp3`, progressNotice, prefix, apiKey);
+            const segments = [];
+            if (asrJson.segments) {
+              asrJson.segments.forEach((seg) => {
+                segments.push({ start: seg.start + chunkStart, end: seg.end + chunkStart, text: (seg.text || "").trim() });
+              });
+            }
+            allBatchJobs[i].segments = segments;
+            hasSegments[i] = segments.length > 0;
+            if (checkpoint.batches[i])
+              checkpoint.batches[i].segments = segments;
+            else
+              checkpoint.batches[i] = { done: false, segments };
+            this.saveCheckpoint(checkpoint);
+          } catch (e) {
+            console.error(`[\u7EED\u8DD1] \u6279\u6B21 ${i + 1} ASR \u5931\u8D25:`, e);
+            allBatchJobs[i].segments = [];
+            hasSegments[i] = false;
+          } finally {
+            progressNotice.hide();
+          }
+        }
+      };
+      const asrWorkers = [];
+      for (let w = 0; w < Math.min(maxConcurrent, needAsr.length); w++)
+        asrWorkers.push(asrWorker(w));
+      await Promise.all(asrWorkers);
+      let llmCursor = 0;
+      let llmFailed = 0;
+      let criticalError = false;
+      const MAX_LLM_FAILURES = 3;
+      const llmWorker = async () => {
+        while (true) {
+          const idx = llmCursor++;
+          if (idx >= toDo.length || criticalError)
+            break;
+          const i = toDo[idx];
+          const job = allBatchJobs[i];
+          if (job.segments.length === 0) {
+            this.batchWriteStatus.set(i, { success: false, retryCount: 0, lastError: "ASR \u8F6C\u5199\u5931\u8D25" });
+            if (this.currentTaskReport) {
+              this.currentTaskReport.failedBatches++;
+              this.currentTaskReport.errorLog.push(`\u7EED\u8DD1 \u6279\u6B21 ${i + 1}: ASR \u8F6C\u5199\u5931\u8D25`);
+            }
+            llmFailed++;
+            if (llmFailed >= MAX_LLM_FAILURES) {
+              criticalError = true;
+              new import_obsidian6.Notice(`\u274C \u7EED\u8DD1\u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u6682\u505C`, 8e3);
+            }
+            continue;
+          }
+          try {
+            const result = await this.runBatchAnalysis(job, videoFile.name, editor, leaf, 0);
+            if (result === false) {
+              llmFailed++;
+              if (this.currentTaskReport)
+                this.currentTaskReport.errorLog.push(`\u7EED\u8DD1 \u6279\u6B21 ${i + 1}: \u5206\u6790\u5931\u8D25`);
+              if (llmFailed >= MAX_LLM_FAILURES) {
+                criticalError = true;
+                new import_obsidian6.Notice(`\u274C \u7EED\u8DD1\u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u6682\u505C`, 8e3);
+              }
+            } else {
+              llmFailed = 0;
+            }
+          } catch (e) {
+            console.error(`\u7EED\u8DD1 \u6279\u6B21 ${i + 1} \u5F02\u5E38:`, e);
+            llmFailed++;
+            if (llmFailed >= MAX_LLM_FAILURES) {
+              criticalError = true;
+              new import_obsidian6.Notice(`\u274C \u7EED\u8DD1\u8FDE\u7EED\u5931\u8D25 ${MAX_LLM_FAILURES} \u6B21\uFF0C\u5DF2\u6682\u505C`, 8e3);
+            }
+          }
+        }
+      };
+      const llmWorkers = [];
+      for (let w = 0; w < Math.min(maxConcurrent, toDo.length); w++)
+        llmWorkers.push(llmWorker());
+      await Promise.all(llmWorkers);
+      const allSectionsOk = await this.ensureAllSectionsWritten(editor, leaf, totalChunks, videoFile.name);
+      if (!allSectionsOk) {
+        await this.pauseTranscriptionWithError(videoFile, editor, leaf, totalChunks);
+        return;
+      }
+      new import_obsidian6.Notice(`\u2728 \u5206\u5757\u7EED\u8DD1\u5B8C\u6BD5\uFF0C\u5F00\u59CB\u5168\u5C40\u6821\u9A8C\u4E0E\u4FEE\u6B63`);
+      await this.runGlobalCorrectionAnalysis(allBatchJobs, videoFile.name, editor, leaf, checkpoint.duration);
+      this.currentTaskReport.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
+      new import_obsidian6.Notice("\u{1F389} \u65AD\u70B9\u7EED\u8DD1\u5B8C\u6210\uFF01", 0);
+      await this.generateMindMap(videoFile);
+      this.currentTaskReport.mindmapSuccess = true;
+      if (noteFile instanceof import_obsidian6.TFile) {
+        await this.generateAndAppendReportToFile(noteFile);
+      }
+      this.clearCheckpoint(videoFile.path);
+      new import_obsidian6.Notice("\u2705 \u65AD\u70B9\u7EED\u8DD1\u5B8C\u6210\uFF0C\u68C0\u67E5\u70B9\u5DF2\u6E05\u9664", 5e3);
+    } catch (error) {
+      console.error("\u7EED\u8DD1\u5931\u8D25:", error);
+      new import_obsidian6.Notice(`\u274C \u7EED\u8DD1\u5931\u8D25: ${error.message}`, 8e3);
+    } finally {
+      this.isProcessing = false;
+      this.currentTranscribingNotePath = null;
+      this.activeAiCount = 0;
+      this.allBatchJobsRef = null;
+      this.currentCheckpoint = null;
+    }
+  }
+  /**
    * 生成思维导图
    */
   async generateMindMap(videoFile) {
@@ -5209,13 +5878,13 @@ ${endMarker}`;
         console.warn("\u6CA1\u6709\u7AE0\u8282\u6570\u636E\uFF0C\u8DF3\u8FC7\u601D\u7EF4\u5BFC\u56FE\u751F\u6210");
         return;
       }
-      const prepareNotice = new import_obsidian5.Notice("\u{1F9E0} [\u9636\u6BB51/4] \u51C6\u5907\u7AE0\u8282\u6570\u636E...", 0);
+      const prepareNotice = new import_obsidian6.Notice("\u{1F9E0} [\u9636\u6BB51/4] \u51C6\u5907\u7AE0\u8282\u6570\u636E...", 0);
       const videoDir = ((_a = videoFile.parent) == null ? void 0 : _a.path) === "/" ? "" : ((_b = videoFile.parent) == null ? void 0 : _b.path) || "";
       const { notePath } = calculateNotePaths(videoDir, videoFile.basename);
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (!(noteFile instanceof import_obsidian5.TFile)) {
+      if (!(noteFile instanceof import_obsidian6.TFile)) {
         prepareNotice.hide();
-        new import_obsidian5.Notice("\u26A0\uFE0F \u65E0\u6CD5\u627E\u5230\u7B14\u8BB0\u6587\u4EF6\uFF0C\u8DF3\u8FC7\u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u3002");
+        new import_obsidian6.Notice("\u26A0\uFE0F \u65E0\u6CD5\u627E\u5230\u7B14\u8BB0\u6587\u4EF6\uFF0C\u8DF3\u8FC7\u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u3002");
         return;
       }
       prepareNotice.setMessage("\u{1F9E0} [\u9636\u6BB52/4] \u751F\u6210 Markmap...");
@@ -5256,7 +5925,7 @@ markmap:
       }
       if (!mindmapSuccess || !finalContent) {
         prepareNotice.hide();
-        new import_obsidian5.Notice("\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u5185\u5BB9\u751F\u6210\u5931\u8D25", 5e3);
+        new import_obsidian6.Notice("\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u5185\u5BB9\u751F\u6210\u5931\u8D25", 5e3);
         return;
       }
       prepareNotice.setMessage("\u{1F9E0} [\u9636\u6BB53/4] \u5199\u5165\u6587\u4EF6...");
@@ -5264,15 +5933,15 @@ markmap:
       console.log(`[\u601D\u7EF4\u5BFC\u56FE] \u76EE\u6807\u8DEF\u5F84: ${mindmapPath}`);
       await sleep(200);
       let existingFile = this.app.vault.getAbstractFileByPath(mindmapPath);
-      console.log(`[\u601D\u7EF4\u5BFC\u56FE] \u6587\u4EF6\u662F\u5426\u5B58\u5728: ${existingFile instanceof import_obsidian5.TFile}`);
+      console.log(`[\u601D\u7EF4\u5BFC\u56FE] \u6587\u4EF6\u662F\u5426\u5B58\u5728: ${existingFile instanceof import_obsidian6.TFile}`);
       try {
-        if (existingFile instanceof import_obsidian5.TFile) {
+        if (existingFile instanceof import_obsidian6.TFile) {
           await safeWriteWithRetry(this.app.vault, existingFile, finalContent, 3);
           console.log(`\u601D\u7EF4\u5BFC\u56FE\u5DF2\u66F4\u65B0: ${mindmapPath}`);
         } else {
           await sleep(100);
           existingFile = this.app.vault.getAbstractFileByPath(mindmapPath);
-          if (existingFile instanceof import_obsidian5.TFile) {
+          if (existingFile instanceof import_obsidian6.TFile) {
             await safeWriteWithRetry(this.app.vault, existingFile, finalContent, 3);
             console.log(`\u601D\u7EF4\u5BFC\u56FE\u5DF2\u66F4\u65B0(\u4E8C\u6B21\u68C0\u67E5): ${mindmapPath}`);
           } else {
@@ -5289,7 +5958,7 @@ markmap:
       prepareNotice.hide();
     } catch (error) {
       console.error("\u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u5931\u8D25:", error);
-      new import_obsidian5.Notice("\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u5931\u8D25\uFF0C\u4F46\u8F6C\u5199\u5DF2\u5B8C\u6210", 5e3);
+      new import_obsidian6.Notice("\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u5931\u8D25\uFF0C\u4F46\u8F6C\u5199\u5DF2\u5B8C\u6210", 5e3);
     }
   }
   /**
@@ -5338,13 +6007,13 @@ markmap:
     let tempLeaf;
     try {
       const existingRich = this.app.vault.getAbstractFileByPath(richPath);
-      if (existingRich instanceof import_obsidian5.TFile) {
+      if (existingRich instanceof import_obsidian6.TFile) {
         await this.app.vault.delete(existingRich);
         console.log("[\u81EA\u52A8\u8F6C\u6362] \u5DF2\u5220\u9664\u65E7 rich \u6587\u4EF6:", richPath);
         await sleep(200);
       }
       const basicFile = this.app.vault.getAbstractFileByPath(basicPath);
-      if (!(basicFile instanceof import_obsidian5.TFile)) {
+      if (!(basicFile instanceof import_obsidian6.TFile)) {
         console.warn("[\u81EA\u52A8\u8F6C\u6362] \u65E0\u6CD5\u627E\u5230 basic \u601D\u7EF4\u5BFC\u56FE\u6587\u4EF6:", basicPath);
         return;
       }
@@ -5409,7 +6078,7 @@ markmap:
       const cmdExists = !!((_d = (_c = this.app.commands) == null ? void 0 : _c.commands) == null ? void 0 : _d[commandId]);
       console.log(`[\u81EA\u52A8\u8F6C\u6362] \u547D\u4EE4\u662F\u5426\u5B58\u5728: ${cmdExists}`);
       if (!cmdExists) {
-        new import_obsidian5.Notice("\u274C MarkMind \u63D2\u4EF6\u672A\u542F\u7528\u6216\u547D\u4EE4 ID \u5DF2\u53D8\u66F4\uFF0C\u65E0\u6CD5\u81EA\u52A8\u8F6C\u6362 rich \u6A21\u5F0F");
+        new import_obsidian6.Notice("\u274C MarkMind \u63D2\u4EF6\u672A\u542F\u7528\u6216\u547D\u4EE4 ID \u5DF2\u53D8\u66F4\uFF0C\u65E0\u6CD5\u81EA\u52A8\u8F6C\u6362 rich \u6A21\u5F0F");
         restoreAndCleanup(tempLeaf);
         return;
       }
@@ -5459,7 +6128,7 @@ markmap:
         for (let i = 0; i < 30; i++) {
           await sleep(500);
           const f = this.app.vault.getAbstractFileByPath(richPath);
-          if (f instanceof import_obsidian5.TFile) {
+          if (f instanceof import_obsidian6.TFile) {
             richFile = f;
             console.log(`[\u81EA\u52A8\u8F6C\u6362] \u2705 \u7B2C ${i + 1} \u6B21\u8F6E\u8BE2\u547D\u4E2D rich \u6587\u4EF6 (\u5C1D\u8BD5 ${convAttempt + 1})`);
             break;
@@ -5474,7 +6143,7 @@ markmap:
       }
       if (!richFile) {
         console.warn("[\u81EA\u52A8\u8F6C\u6362] Rich \u6587\u4EF6\u672A\u5728\u9884\u671F\u65F6\u95F4\u5185\u751F\u6210:", richPath);
-        new import_obsidian5.Notice('\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u81EA\u52A8\u8F6C\u6362 rich \u6A21\u5F0F\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u5728 basic \u89C6\u56FE\u4E0A\u6309 Ctrl+P \u2192 "Change basic mode to rich mode"', 8e3);
+        new import_obsidian6.Notice('\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u81EA\u52A8\u8F6C\u6362 rich \u6A21\u5F0F\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u5728 basic \u89C6\u56FE\u4E0A\u6309 Ctrl+P \u2192 "Change basic mode to rich mode"', 8e3);
         restoreAndCleanup(tempLeaf);
         return;
       }
@@ -5483,11 +6152,11 @@ markmap:
       console.log("[\u81EA\u52A8\u8F6C\u6362] \u5DF2\u5220\u9664 basic \u6587\u4EF6:", basicPath);
       restoreAndCleanup(tempLeaf);
       tempLeaf = void 0;
-      new import_obsidian5.Notice("\u{1F680} \u601D\u7EF4\u5BFC\u56FE\u5DF2\u81EA\u52A8\u8F6C\u6362\u4E3A Rich \u6A21\u5F0F", 3e3);
+      new import_obsidian6.Notice("\u{1F680} \u601D\u7EF4\u5BFC\u56FE\u5DF2\u81EA\u52A8\u8F6C\u6362\u4E3A Rich \u6A21\u5F0F", 3e3);
     } catch (error) {
       console.error("[\u81EA\u52A8\u8F6C\u6362] \u5931\u8D25:", error);
       restoreAndCleanup(tempLeaf);
-      new import_obsidian5.Notice('\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u81EA\u52A8\u8F6C\u6362\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u64CD\u4F5C: Ctrl+P \u2192 "Change basic mode to rich mode"', 8e3);
+      new import_obsidian6.Notice('\u26A0\uFE0F \u601D\u7EF4\u5BFC\u56FE\u81EA\u52A8\u8F6C\u6362\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u64CD\u4F5C: Ctrl+P \u2192 "Change basic mode to rich mode"', 8e3);
     }
   }
   // ==================== 辅助方法 ====================
@@ -5552,11 +6221,11 @@ markmap:
           throw err;
         }
       }
-    } else if (!(existingFolder instanceof import_obsidian5.TFolder)) {
+    } else if (!(existingFolder instanceof import_obsidian6.TFolder)) {
       throw new Error(`\u8DEF\u5F84\u5DF2\u5B58\u5728\u4E14\u4E0D\u662F\u6587\u4EF6\u5939: ${noteFolder}`);
     }
     let noteFile = this.app.vault.getAbstractFileByPath(notePath);
-    if (!(noteFile instanceof import_obsidian5.TFile)) {
+    if (!(noteFile instanceof import_obsidian6.TFile)) {
       try {
         let resourceUrl;
         try {
@@ -5584,7 +6253,7 @@ markmap:
     let targetLeaf = null;
     this.app.workspace.iterateAllLeaves((leaf) => {
       var _a2;
-      if (leaf.view instanceof import_obsidian5.MarkdownView && ((_a2 = leaf.view.file) == null ? void 0 : _a2.path) === targetFile.path) {
+      if (leaf.view instanceof import_obsidian6.MarkdownView && ((_a2 = leaf.view.file) == null ? void 0 : _a2.path) === targetFile.path) {
         targetLeaf = leaf;
       }
     });
@@ -5622,7 +6291,7 @@ markmap:
   async regenerateMindmapFromNote() {
     const activeLeaf = this.app.workspace.activeLeaf;
     if (!activeLeaf || activeLeaf.view.getViewType() !== "markdown") {
-      new import_obsidian5.Notice("\u274C \u8BF7\u6253\u5F00\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6");
+      new import_obsidian6.Notice("\u274C \u8BF7\u6253\u5F00\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6");
       return;
     }
     const noteFile = activeLeaf.view.file;
@@ -5632,20 +6301,20 @@ markmap:
       const content = await this.app.vault.read(noteFile);
       const videoFile = await this.findVideoFileFromNote(noteFile, content);
       if (!videoFile) {
-        new import_obsidian5.Notice("\u274C \u65E0\u6CD5\u627E\u5230\u5173\u8054\u7684\u89C6\u9891\u6587\u4EF6\uFF0C\u8BF7\u786E\u4FDD\u7B14\u8BB0\u5934\u90E8\u5305\u542B\u89C6\u9891\u94FE\u63A5\u6216\u4F4D\u4E8E\u6B63\u786E\u76EE\u5F55", 5e3);
+        new import_obsidian6.Notice("\u274C \u65E0\u6CD5\u627E\u5230\u5173\u8054\u7684\u89C6\u9891\u6587\u4EF6\uFF0C\u8BF7\u786E\u4FDD\u7B14\u8BB0\u5934\u90E8\u5305\u542B\u89C6\u9891\u94FE\u63A5\u6216\u4F4D\u4E8E\u6B63\u786E\u76EE\u5F55", 5e3);
         return;
       }
       const chapters = this.parseChaptersFromNote(content);
       if (chapters.length === 0) {
-        new import_obsidian5.Notice("\u274C \u672A\u8BC6\u522B\u5230\u7AE0\u8282\u6570\u636E\u3002\u8BF7\u786E\u8BA4\u7B14\u8BB0\u683C\u5F0F\u5305\u542B '#### \u23F1\uFE0F MM:SS \u6807\u9898'", 5e3);
+        new import_obsidian6.Notice("\u274C \u672A\u8BC6\u522B\u5230\u7AE0\u8282\u6570\u636E\u3002\u8BF7\u786E\u8BA4\u7B14\u8BB0\u683C\u5F0F\u5305\u542B '#### \u23F1\uFE0F MM:SS \u6807\u9898'", 5e3);
         return;
       }
       this.allChapterSummaries = chapters;
-      new import_obsidian5.Notice(`\u{1F9E0} \u8BC6\u522B\u5230 ${chapters.length} \u4E2A\u7AE0\u8282\uFF0C\u5F00\u59CB\u751F\u6210\u601D\u7EF4\u5BFC\u56FE\uFF08\u542B\u81EA\u52A8 Rich \u8F6C\u6362\uFF09...`);
+      new import_obsidian6.Notice(`\u{1F9E0} \u8BC6\u522B\u5230 ${chapters.length} \u4E2A\u7AE0\u8282\uFF0C\u5F00\u59CB\u751F\u6210\u601D\u7EF4\u5BFC\u56FE\uFF08\u542B\u81EA\u52A8 Rich \u8F6C\u6362\uFF09...`);
       await this.generateMindMap(videoFile);
     } catch (e) {
       console.error(e);
-      new import_obsidian5.Notice(`\u274C \u9519\u8BEF: ${e.message}`);
+      new import_obsidian6.Notice(`\u274C \u9519\u8BEF: ${e.message}`);
     }
   }
   /**
@@ -5655,7 +6324,7 @@ markmap:
   async generatePartialMindmapFromNote() {
     const activeLeaf = this.app.workspace.activeLeaf;
     if (!activeLeaf || activeLeaf.view.getViewType() !== "markdown") {
-      new import_obsidian5.Notice("\u274C \u8BF7\u5148\u6253\u5F00\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6\uFF0C\u518D\u8FD0\u884C\u672C\u547D\u4EE4");
+      new import_obsidian6.Notice("\u274C \u8BF7\u5148\u6253\u5F00\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6\uFF0C\u518D\u8FD0\u884C\u672C\u547D\u4EE4");
       return;
     }
     const noteFile = viewFileOf(activeLeaf.view);
@@ -5665,12 +6334,12 @@ markmap:
     try {
       content = await this.app.vault.read(noteFile);
     } catch (e) {
-      new import_obsidian5.Notice(`\u274C \u8BFB\u53D6\u7B14\u8BB0\u5931\u8D25: ${errorMessage(e)}`);
+      new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u7B14\u8BB0\u5931\u8D25: ${errorMessage(e)}`);
       return;
     }
     const chunks = parseNoteChunks(content);
     if (chunks.length === 0) {
-      new import_obsidian5.Notice("\u274C \u672A\u627E\u5230 %%BATCH_N%% \u5206\u5757\u6807\u8BB0\uFF0C\u8BF7\u786E\u8BA4\u8FD9\u662F\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6", 6e3);
+      new import_obsidian6.Notice("\u274C \u672A\u627E\u5230 %%BATCH_N%% \u5206\u5757\u6807\u8BB0\uFF0C\u8BF7\u786E\u8BA4\u8FD9\u662F\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6", 6e3);
       return;
     }
     const { candidates, defaultTarget } = collectCandidateMindmaps(this.app, noteFile);
@@ -5690,7 +6359,7 @@ markmap:
     const selectedText = selectedChunks.map((c) => c.text).join("\n\n");
     const chapters = parseChaptersFromMarkdown(selectedText);
     if (chapters.length === 0) {
-      new import_obsidian5.Notice("\u274C \u6240\u9009\u5206\u5757\u672A\u8BC6\u522B\u5230\u7AE0\u8282\uFF08#### \u23F1\uFE0F \u6807\u9898\uFF09\uFF0C\u8BF7\u6362\u5206\u5757\u91CD\u8BD5", 6e3);
+      new import_obsidian6.Notice("\u274C \u6240\u9009\u5206\u5757\u672A\u8BC6\u522B\u5230\u7AE0\u8282\uFF08#### \u23F1\uFE0F \u6807\u9898\uFF09\uFF0C\u8BF7\u6362\u5206\u5757\u91CD\u8BD5", 6e3);
       return;
     }
     const target = selection.target;
@@ -5698,16 +6367,16 @@ markmap:
     try {
       targetText = await this.app.vault.read(target);
     } catch (e) {
-      new import_obsidian5.Notice(`\u274C \u65E0\u6CD5\u8BFB\u53D6\u76EE\u6807\u5BFC\u56FE: ${errorMessage(e)}`);
+      new import_obsidian6.Notice(`\u274C \u65E0\u6CD5\u8BFB\u53D6\u76EE\u6807\u5BFC\u56FE: ${errorMessage(e)}`);
       return;
     }
     const format = detectMindmapFormat(targetText);
     if (format === "unknown") {
-      new import_obsidian5.Notice("\u274C \u76EE\u6807\u6587\u4EF6\u4E0D\u662F\u53EF\u8BC6\u522B\u7684\u601D\u7EF4\u5BFC\u56FE\uFF08rich/basic\uFF09\uFF0C\u8BF7\u6362\u4E00\u4E2A\u6587\u4EF6", 6e3);
+      new import_obsidian6.Notice("\u274C \u76EE\u6807\u6587\u4EF6\u4E0D\u662F\u53EF\u8BC6\u522B\u7684\u601D\u7EF4\u5BFC\u56FE\uFF08rich/basic\uFF09\uFF0C\u8BF7\u6362\u4E00\u4E2A\u6587\u4EF6", 6e3);
       return;
     }
     const chunkLabel = formatChunkRangeLabel(selectedChunks);
-    const progress = new import_obsidian5.Notice(`\u{1F9E9} [1/3] \u751F\u6210\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE\uFF08${chunkLabel}\uFF09\u2026`, 0);
+    const progress = new import_obsidian6.Notice(`\u{1F9E9} [1/3] \u751F\u6210\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE\uFF08${chunkLabel}\uFF09\u2026`, 0);
     let branchMarkdown;
     try {
       const existingOutline = format === "rich" ? extractRichOutline(targetText) : extractBasicOutline(targetText);
@@ -5715,7 +6384,7 @@ markmap:
     } catch (e) {
       progress.hide();
       console.error("[\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE] \u751F\u6210\u5931\u8D25:", e);
-      new import_obsidian5.Notice(`\u274C \u751F\u6210\u5931\u8D25: ${errorMessage(e)}`, 8e3);
+      new import_obsidian6.Notice(`\u274C \u751F\u6210\u5931\u8D25: ${errorMessage(e)}`, 8e3);
       return;
     }
     progress.setMessage("\u{1F9E9} [2/3] \u5408\u5E76\u5230\u5BFC\u56FE\u6570\u636E\u2026");
@@ -5737,7 +6406,7 @@ markmap:
     } catch (e) {
       progress.hide();
       console.error("[\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE] \u5408\u5E76\u5931\u8D25:", e);
-      new import_obsidian5.Notice(`\u274C \u5408\u5E76\u5931\u8D25: ${errorMessage(e)}`, 8e3);
+      new import_obsidian6.Notice(`\u274C \u5408\u5E76\u5931\u8D25: ${errorMessage(e)}`, 8e3);
       return;
     }
     progress.setMessage("\u{1F9E9} [3/3] \u5199\u5165\u5BFC\u56FE\u6587\u4EF6\u2026");
@@ -5749,11 +6418,11 @@ markmap:
     } catch (e) {
       progress.hide();
       console.error("[\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE] \u5199\u5165\u5931\u8D25:", e);
-      new import_obsidian5.Notice(`\u274C \u5199\u5165\u5931\u8D25: ${errorMessage(e)}`, 8e3);
+      new import_obsidian6.Notice(`\u274C \u5199\u5165\u5931\u8D25: ${errorMessage(e)}`, 8e3);
       return;
     }
     progress.hide();
-    new import_obsidian5.Notice(`\u2705 \u5DF2\u8FFD\u52A0 ${addedCount} \u4E2A\u8282\u70B9\u5230\u300C${target.basename}\u300D`, 5e3);
+    new import_obsidian6.Notice(`\u2705 \u5DF2\u8FFD\u52A0 ${addedCount} \u4E2A\u8282\u70B9\u5230\u300C${target.basename}\u300D`, 5e3);
     console.log(`[\u5C40\u90E8\u601D\u7EF4\u5BFC\u56FE] \u5DF2\u8FFD\u52A0 ${addedCount} \u4E2A\u8282\u70B9\u5230 ${target.path}`);
     if (hadOpenView) {
       try {
@@ -5788,7 +6457,7 @@ markmap:
     if (linkMatch) {
       const linkText = linkMatch[1].split("|")[0];
       const linkedFile = this.app.metadataCache.getFirstLinkpathDest(linkText, noteFile.path);
-      if (linkedFile instanceof import_obsidian5.TFile)
+      if (linkedFile instanceof import_obsidian6.TFile)
         return linkedFile;
     }
     const baseName = noteFile.basename.replace(/^📝/, "");
@@ -5797,7 +6466,7 @@ markmap:
       if (noteFile.parent) {
         for (const name of possibleNames) {
           const f = this.app.vault.getAbstractFileByPath(`${noteFile.parent.path}/${name}`);
-          if (f instanceof import_obsidian5.TFile)
+          if (f instanceof import_obsidian6.TFile)
             return f;
         }
       }
@@ -5806,7 +6475,7 @@ markmap:
         for (const name of possibleNames) {
           const p = parentPath ? `${parentPath}/${name}` : name;
           const f = this.app.vault.getAbstractFileByPath(p);
-          if (f instanceof import_obsidian5.TFile)
+          if (f instanceof import_obsidian6.TFile)
             return f;
         }
       }

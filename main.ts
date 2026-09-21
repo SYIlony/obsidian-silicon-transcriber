@@ -119,6 +119,21 @@ interface TaskReport {
     endTime: Date;
 }
 
+/**
+ * 💾 断点续跑检查点：记录一次转写任务的进度，供「继续转写」从断点恢复，
+ * 避免重复完成已经做过的 ASR + LLM 工作。
+ */
+interface TranscribeCheckpoint {
+    version: number;
+    videoPath: string;                     // 视频文件（vault 相对路径）
+    notePath: string;                      // 笔记文件（vault 相对路径）
+    totalChunks: number;
+    duration: number;
+    historySummaries: string;              // 已累积的跨批次历史摘要
+    allChapterSummaries: ChapterSummary[]; // 已生成的章节摘要（供思维导图/全局校验）
+    batches: Array<{ done: boolean; segments?: Segment[]; content?: string } | null>;
+}
+
 /** 读取文件视图（Markdown / MarkMind 等）关联的文件 */
 function viewFileOf(view: unknown): TFile | null {
     if (view !== null && typeof view === 'object' && 'file' in view) {
@@ -172,6 +187,8 @@ export default class TranscribePlugin extends Plugin {
     private batchContentCache: Map<string, string> = new Map();
     /** 当前任务执行报告 */
     private currentTaskReport: TaskReport | null = null;
+    /** 💾 当前任务的断点检查点（用于断点续跑，随批次进度增量落盘） */
+    private currentCheckpoint: TranscribeCheckpoint | null = null;
     /** 🔒 文件写入互斥锁：确保同一时间只有一个写入操作，防止并发 read-modify-write 竞争 */
     private fileWriteLock: Promise<void> = Promise.resolve();
 
@@ -188,6 +205,133 @@ export default class TranscribePlugin extends Plugin {
             return await fn();
         } finally {
             resolve();
+        }
+    }
+
+    /** 💾 断点检查点目录（插件目录下的 checkpoints 子目录） */
+    private checkpointDir(): string {
+        const adapter = this.app.vault.adapter;
+        if (!(adapter instanceof FileSystemAdapter)) return '';
+        return path.join(adapter.getBasePath(), this.manifest.dir ?? '', 'checkpoints');
+    }
+
+    /** 💾 根据视频路径生成检查点文件绝对路径（可读前缀 + 路径哈希，避免 Windows 260 字符上限） */
+    private checkpointFilePath(videoPath: string): string {
+        let hash = 5381;
+        for (let i = 0; i < videoPath.length; i++) {
+            hash = ((hash << 5) + hash + videoPath.charCodeAt(i)) | 0;
+        }
+        const safe = videoPath.replace(/[\\/:*?"<>|]/g, '_');
+        const prefix = safe.length > 80 ? safe.slice(0, 80) : safe;
+        return path.join(this.checkpointDir(), `${prefix}_${(hash >>> 0).toString(36)}.json`);
+    }
+
+    /** 💾 保存检查点（同步写盘，失败不阻断主流程） */
+    private saveCheckpoint(checkpoint: TranscribeCheckpoint) {
+        try {
+            // 同步「运行期进度」字段：historySummaries / allChapterSummaries 由实例持有并持续追加，
+            // 检查点对象自身不维护它们。不同步的话，续跑后的全局校验与思维导图会丢掉已完成批次。
+            checkpoint.historySummaries = this.historySummaries;
+            checkpoint.allChapterSummaries = this.allChapterSummaries;
+
+            const dir = this.checkpointDir();
+            if (!dir) return;
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(this.checkpointFilePath(checkpoint.videoPath), JSON.stringify(checkpoint, null, 2), 'utf-8');
+        } catch (e) {
+            console.warn('[断点] 保存检查点失败:', e);
+        }
+    }
+
+    /** 💾 读取指定视频的检查点 */
+    private loadCheckpoint(videoPath: string): TranscribeCheckpoint | null {
+        try {
+            const p = this.checkpointFilePath(videoPath);
+            if (!fs.existsSync(p)) return null;
+            const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            if (!raw || raw.version !== 1) return null;
+            return raw as TranscribeCheckpoint;
+        } catch (e) {
+            console.warn('[断点] 读取检查点失败:', e);
+            return null;
+        }
+    }
+
+    /** 💾 清除指定视频的检查点 */
+    private clearCheckpoint(videoPath: string) {
+        try {
+            const p = this.checkpointFilePath(videoPath);
+            if (fs.existsSync(p)) fs.rmSync(p);
+        } catch (e) {
+            console.warn('[断点] 清除检查点失败:', e);
+        }
+    }
+
+    /** 💾 列出所有检查点，按修改时间倒序（最新在前） */
+    private listCheckpoints(): { filePath: string; checkpoint: TranscribeCheckpoint; mtimeMs: number }[] {
+        try {
+            const dir = this.checkpointDir();
+            if (!dir || !fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir)
+                .filter(f => f.endsWith('.json'))
+                .map(f => {
+                    const full = path.join(dir, f);
+                    try {
+                        const raw = JSON.parse(fs.readFileSync(full, 'utf-8'));
+                        if (!raw || raw.version !== 1) return null;
+                        return {
+                            filePath: full,
+                            checkpoint: raw as TranscribeCheckpoint,
+                            mtimeMs: fs.statSync(full).mtimeMs
+                        };
+                    } catch { return null; }
+                })
+                .filter((x): x is { filePath: string; checkpoint: TranscribeCheckpoint; mtimeMs: number } => x !== null)
+                .sort((a, b) => b.mtimeMs - a.mtimeMs);
+        } catch (e) {
+            console.warn('[断点] 列出检查点失败:', e);
+            return [];
+        }
+    }
+
+    /**
+     * 在写入锁内把某个分块区间的内容替换为指定文本（占位/提示用），失败只告警不抛出。
+     * @returns 是否写入成功
+     */
+    private async writeSectionText(targetLeaf: WorkspaceLeaf, editor: Editor, anchorId: string, text: string): Promise<boolean> {
+        const startMarker = `%%${anchorId}_START%%`;
+        const endMarker = `%%${anchorId}_END%%`;
+        try {
+            await this.withFileLock(async () => {
+                const noteFile = (targetLeaf.view as any).file as TFile;
+                if (noteFile instanceof TFile) {
+                    const fileContent = await this.app.vault.read(noteFile);
+                    const sIdx = fileContent.indexOf(startMarker);
+                    const eIdx = fileContent.indexOf(endMarker);
+                    if (sIdx !== -1 && eIdx !== -1) {
+                        const newFileContent =
+                            fileContent.substring(0, sIdx + startMarker.length) +
+                            `\n${text}\n` +
+                            fileContent.substring(eIdx);
+                        await this.app.vault.modify(noteFile, newFileContent);
+                    }
+                } else {
+                    const docContent = editor.getValue();
+                    const startIndex = docContent.indexOf(startMarker);
+                    const endIndex = docContent.indexOf(endMarker);
+                    if (startIndex !== -1 && endIndex !== -1) {
+                        editor.replaceRange(
+                            `\n${text}\n`,
+                            editor.offsetToPos(startIndex + startMarker.length),
+                            editor.offsetToPos(endIndex)
+                        );
+                    }
+                }
+            });
+            return true;
+        } catch (e) {
+            console.warn(`[${anchorId}] 区间文本写入失败（不影响主流程）:`, e);
+            return false;
         }
     }
 
@@ -314,6 +458,15 @@ export default class TranscribePlugin extends Plugin {
             name: '📦 批量转写',
             callback: async () => {
                 await this.openBatchTranscribeModal();
+            }
+        });
+
+        // ▶️ 注册"继续转写（断点续跑）"命令：从上次暂停/失败的断点恢复，跳过已完成分块
+        this.addCommand({
+            id: 'resume-transcribe',
+            name: '▶️ 继续转写（断点续跑）',
+            callback: async () => {
+                await this.resumeFromCheckpoint();
             }
         });
     }
@@ -945,6 +1098,9 @@ export default class TranscribePlugin extends Plugin {
         this.pendingLeftoverRawText = "";
         this.allChapterSummaries = [];
         this.batchContentCache.clear();
+        // 跨任务清理：否则上一个任务的失败批次会被算进本次的暂停/错误报告
+        this.batchWriteStatus.clear();
+        this.anchorStateCache.clear();
         this.aiQueue = Promise.resolve();
         this.activeAiCount = 0;
         
@@ -1016,6 +1172,20 @@ export default class TranscribePlugin extends Plugin {
                 console.warn('⚠️ noteFile 不可用，回退到 editor.setValue');
             }
             
+            // 💾 断点续跑检查点：记录视频/笔记/分块数，后续每完成一批就增量更新
+            const checkpointNotePath = initialNoteFile instanceof TFile ? initialNoteFile.path : ((targetLeaf.view as any).file?.path ?? '');
+            this.currentCheckpoint = {
+                version: 1,
+                videoPath: file.path,
+                notePath: checkpointNotePath,
+                totalChunks,
+                duration,
+                historySummaries: '',
+                allChapterSummaries: [],
+                batches: new Array(totalChunks).fill(null).map(() => ({ done: false }))
+            };
+            this.saveCheckpoint(this.currentCheckpoint);
+
             // 等待编辑器从磁盘同步内容
             await sleep(300);
             
@@ -1168,54 +1338,30 @@ export default class TranscribePlugin extends Plugin {
 
                         // 3. 处理 ASR 返回的 segments
                         if (asrJson.segments) {
-                            let chunkTextForEditor = "";
                             asrJson.segments.forEach((seg: any) => {
                                 const absStart = seg.start + chunkStart;
                                 const absEnd = seg.end + chunkStart;
-                                const cleanText = seg.text.trim();
-                                const tStr = formatTime(absStart);
-
-                                pendingSegments.push({ start: absStart, end: absEnd, text: cleanText });
-                                chunkTextForEditor += `> **[[${file.name}#t=${tStr}|${tStr}]]** ${cleanText}\n`;
+                                pendingSegments.push({ start: absStart, end: absEnd, text: (seg.text || '').trim() });
                             });
+                        }
 
-                            // 替换原有的占位说明为已获取到的等待分析文本
-                            // 🔒 使用文件级写入，避免编辑器模式问题
-                            try {
-                                const startMarker = `%%${anchorId}_START%%`;
-                                const endMarker = `%%${anchorId}_END%%`;
-                                // 🔒 使用文件写入锁，防止并发写入竞争
-                                await this.withFileLock(async () => {
-                                    const noteFile = (targetLeaf.view as any).file as TFile;
-                                    if (noteFile instanceof TFile) {
-                                        const fileContent = await this.app.vault.read(noteFile);
-                                        const sIdx = fileContent.indexOf(startMarker);
-                                        const eIdx = fileContent.indexOf(endMarker);
-                                        if (sIdx !== -1 && eIdx !== -1) {
-                                            const newBlock = `\n> [!quote]- ⏳ 第 ${i + 1} 部分已转写完成，正在等待 AI 分析...\n`;
-                                            const newFileContent =
-                                                fileContent.substring(0, sIdx + startMarker.length) +
-                                                newBlock +
-                                                fileContent.substring(eIdx);
-                                            await this.app.vault.modify(noteFile, newFileContent);
-                                        }
-                                    } else {
-                                        // 回退到 editor
-                                        const docContent = editor.getValue();
-                                        const startIndex = docContent.indexOf(startMarker);
-                                        const endIndex = docContent.indexOf(endMarker);
-                                        if (startIndex !== -1 && endIndex !== -1) {
-                                            const newContent = `\n> [!quote]- ⏳ 第 ${i + 1} 部分已转写完成，正在等待 AI 分析...\n`;
-                                            editor.replaceRange(
-                                                newContent,
-                                                editor.offsetToPos(startIndex + startMarker.length),
-                                                editor.offsetToPos(endIndex)
-                                            );
-                                        }
-                                    }
-                                });
-                            } catch (e) {
-                                console.warn(`[批次 ${i}] 中间状态更新失败，不影响后续流程:`, e);
+                        if (pendingSegments.length === 0) {
+                            // ASR 成功但没有任何文本 = 静音段/无语音：写入明确提示并标记完成。
+                            // 否则兜底巡检会把它当「缺失且无缓存」→ 暂停；续跑又重跑 ASR 得到同样的空结果
+                            // → 陷入「暂停 → 续跑 → 再暂停」的死循环。
+                            await this.writeSectionText(targetLeaf, editor, anchorId, '> [!note] 本部分未检测到语音内容（ASR 未返回文本）');
+                            this.batchWriteStatus.set(i, { success: true, retryCount: 0 });
+                            if (this.currentCheckpoint?.batches[i]) {
+                                this.currentCheckpoint.batches[i] = { done: true, segments: [] };
+                                this.saveCheckpoint(this.currentCheckpoint);
+                            }
+                        } else {
+                            // 替换原有占位说明为「已转写完成，等待 AI 分析」
+                            await this.writeSectionText(targetLeaf, editor, anchorId, `> [!quote]- ⏳ 第 ${i + 1} 部分已转写完成，正在等待 AI 分析...`);
+                            // 💾 断点续跑：记录本批次的 ASR 转写结果，避免崩溃后重跑 ffmpeg+ASR
+                            if (this.currentCheckpoint?.batches[i]) {
+                                this.currentCheckpoint.batches[i].segments = pendingSegments;
+                                this.saveCheckpoint(this.currentCheckpoint);
                             }
                         }
 
@@ -1229,6 +1375,11 @@ export default class TranscribePlugin extends Plugin {
                         progressNotice.hide();
                         new Notice(`❌ ${prefix} 转写失败: ${e.message}`);
                         allBatchJobs[i] = { segments: [], batchIndex: i, anchorId: `BATCH_${i}` };
+                        if (this.currentTaskReport) {
+                            this.currentTaskReport.failedBatches++;
+                            this.currentTaskReport.errorLog.push(`批次 ${i + 1} ASR 转写失败: ${e.message}`);
+                        }
+                        this.batchWriteStatus.set(i, { success: false, retryCount: 0, lastError: `ASR 转写失败: ${e.message}` });
                     } finally {
                         // ASR 已结束（无论成功失败），将当前批次推入 LLM 队列中等待空闲的 LLM 车道接手
                         llmQueue.push(i);
@@ -1248,16 +1399,22 @@ export default class TranscribePlugin extends Plugin {
             this.activeAiCount++; // 这里借用 activeAiCount 作为整体分析的一个标志
             await Promise.all(workers);      // 等待 ASR 全部完成
             await Promise.all(llmWorkers);   // 等待所有双轨串行的 LLM 任务完成
+            this.activeAiCount--;
+
+            // 🛡️ 绘图前兜底巡检：用内存缓存补写缺失分块（无需重新生成 AI 内容）
+            const allSectionsOk = await this.ensureAllSectionsWritten(editor, targetLeaf, totalChunks, file.name);
+
+            // 🛑 暂停判定只看「兜底巡检后是否仍有缺失」：不会因为「连续失败但内容都被巡检补回来了」
+            //    而误暂停一篇其实完好的笔记；真正的缺失（含根本没跑到的批次）一定会被巡检点出来。
+            if (!allSectionsOk) {
+                await this.pauseTranscriptionWithError(file, editor, targetLeaf, totalChunks);
+                return;
+            }
 
             // 全部批次分析完毕后，进行整体审查与修正
             new Notice(`✨ 分块分析完毕，开始全局校验与修正`);
             await this.runGlobalCorrectionAnalysis(allBatchJobs, file.name, editor, targetLeaf, duration);
             this.currentTaskReport.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
-
-            this.activeAiCount--;
-
-            // 🛡️ 绘图前兜底巡检：用内存缓存补写缺失分块（无需重新生成 AI 内容），确保笔记完整再开始绘图
-            await this.ensureAllSectionsWritten(editor, targetLeaf, totalChunks, file.name);
 
             // 🎉 完成通知
             new Notice("🎉 智能转写及章节分析完成！", 0);
@@ -1280,6 +1437,9 @@ export default class TranscribePlugin extends Plugin {
             if (noteFile instanceof TFile) {
                 await this.generateAndAppendReportToFile(noteFile);
             }
+
+            // 💾 任务正常完成，清除断点文件，避免下次误续
+            this.clearCheckpoint(file.path);
 
         } catch (error) {
             console.error(error);
@@ -1391,8 +1551,51 @@ export default class TranscribePlugin extends Plugin {
 
             const aiDuration = ((Date.now() - aiStartTime) / 1000).toFixed(1);
             notice.setMessage(`⚙️ 校验耗时 ${aiDuration}s，正在分发最终更新...`);
-            
-            topics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
+
+            // 🛡️ 清洗全局校验输出（历史事故：模型偶发输出"整课粗排重复版"，时间戳全部丢失，
+            // 被旧代码 formatTime(NaN) 静默兜底成 00:00 后又被全部倾倒进 BATCH_0，覆盖正确内容）
+            const prelimSnapshot = this.allChapterSummaries;
+            const prelimTsCount: Record<string, number> = {};
+            for (const c of prelimSnapshot) {
+                const cSec = parseTime(c.timestamp);
+                const cTs = Number.isFinite(cSec) ? formatTime(Math.max(0, cSec)) : '';
+                prelimTsCount[cTs] = (prelimTsCount[cTs] || 0) + 1;
+            }
+
+            const cleaned: ChapterSummary[] = [];
+            let invalidCount = 0;
+            for (const t of topics) {
+                const sec = parseTime(t.timestamp);
+                // 时间戳必须可解析且在视频时长范围内；否则丢弃（绝不兜底成 00:00）
+                if (!Number.isFinite(sec) || sec < -5 || sec > totalDuration + 300) {
+                    invalidCount++;
+                    console.warn(`[全局校验] 丢弃非法时间戳条目: ${JSON.stringify(t.timestamp)} | ${t.title}`);
+                    continue;
+                }
+                cleaned.push({ ...t, timestamp: formatTime(Math.max(0, sec)) });
+            }
+
+            // 塌陷检测：某一时间戳在全局输出中重复出现、远超初步结果的规模 → 判定为失真输出
+            //（注：结构梳理型课程老师会一次性罗列多个模块，同时间戳本身合法，故与初步结果对比）
+            const outTsCount: Record<string, number> = {};
+            for (const t of cleaned) outTsCount[t.timestamp] = (outTsCount[t.timestamp] || 0) + 1;
+            let collapsed: string | null = null;
+            for (const [ts, n] of Object.entries(outTsCount)) {
+                const pn = prelimTsCount[ts] || 0;
+                if (n >= 5 && n >= pn + 3) { collapsed = `${ts}×${n}（初步结果 ${pn} 次）`; break; }
+            }
+
+            if (cleaned.length === 0 || collapsed || invalidCount >= 5) {
+                const reason = collapsed
+                    ? `时间戳塌陷 ${collapsed}`
+                    : invalidCount >= 5 ? `非法时间戳 ${invalidCount} 条` : '清洗后无有效条目';
+                console.warn(`[全局校验] 输出异常（${reason}），放弃本次结果，保留初步笔记`);
+                notice.setMessage('⚠️ 全局校验输出异常，已保留初步结果');
+                setTimeout(() => notice.hide(), 4000);
+                return;
+            }
+
+            topics = cleaned.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
             // 更新全局的摘要用于接下来的脑图生成
             this.allChapterSummaries = topics;
 
@@ -1738,6 +1941,7 @@ export default class TranscribePlugin extends Plugin {
                 console.error(failMsg);
                 notice.setMessage(failMsg);
                 this.markBatchAsFailed(job, editor, targetLeaf, "AI 返回空数据");
+                this.batchWriteStatus.set(job.batchIndex, { success: false, retryCount: 0, lastError: "AI 响应为空" });
                 // 记录失败批次
                 if (this.currentTaskReport) {
                     this.currentTaskReport.failedBatches++;
@@ -1749,18 +1953,50 @@ export default class TranscribePlugin extends Plugin {
 
             // --- 阶段三：处理数据 ---
             notice.setMessage(`⚙️ [批次 ${job.batchIndex + 1}] AI 耗时 ${aiDuration}s，正在排序与清洗数据...`);
-            topics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
+
+            // 🛠️ 先做时间戳修正（越界视为幻觉丢弃），再排序——顺序反了会让修正后的章节乱序。
+            // 修正原因：模型偶尔把 01:17:00 截断成 17:00（丢整点小时），或返回相对本分块的时间；
+            // 直接丢弃会导致整批 finalContent 为空、段落被清空。这里先尝试修正，修不回来才丢弃。
+            const acceptedTopics: ChapterSummary[] = [];
+            for (const topic of topics) {
+                const topicSec = parseTime(topic.timestamp);
+                if (!Number.isFinite(topicSec)) {
+                    console.warn(`[批次 ${job.batchIndex + 1}] 丢弃无法解析的时间戳: ${JSON.stringify(topic.timestamp)} | ${topic.title}`);
+                    continue;
+                }
+                // 统一时间戳写法：模型可能写成 119:03（分钟数超 60）这种非规范形式，
+                // 用 formatTime 归一化为 01:59:03，保证标题与跳转链接格式一致、可点击。
+                // 必须同时满足下界与上界（旧代码缺上界：模型幻觉的超大时间戳会被原样接受）
+                if (topicSec >= startTime - 5 && topicSec <= endTime + 300) {
+                    acceptedTopics.push({ ...topic, timestamp: formatTime(topicSec) });
+                    continue;
+                }
+
+                // 修正 1：保留 MM:SS 找回正确小时（分块窗口 < 1 小时，候选小时唯一）
+                const mmss = ((topicSec % 3600) + 3600) % 3600;
+                let fixed = -1;
+                for (let h = 0; h <= 8; h++) {
+                    const cand = h * 3600 + mmss;
+                    if (cand >= startTime - 5 && cand <= endTime + 300) { fixed = cand; break; }
+                }
+                // 修正 2：相对本分块的时间 → 加回分块起点
+                if (fixed < 0) {
+                    const rel = topicSec + startTime;
+                    if (rel >= startTime - 5 && rel <= endTime + 300) fixed = rel;
+                }
+                if (fixed < 0) {
+                    console.warn(`[批次 ${job.batchIndex + 1}] 丢弃越界时间戳: ${topic.timestamp}`);
+                    continue;
+                }
+                console.warn(`[批次 ${job.batchIndex + 1}] 时间戳修正: ${topic.timestamp} → ${formatTime(fixed)}`);
+                acceptedTopics.push({ ...topic, timestamp: formatTime(fixed) });
+            }
+            acceptedTopics.sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp));
 
             let finalContent = "";
             let newHistory = "";
 
-            for (let t = 0; t < topics.length; t++) {
-                const topic = topics[t];
-                const topicSec = parseTime(topic.timestamp);
-
-                // 过滤幻觉
-                if (topicSec < startTime - 5) continue;
-
+            for (const topic of acceptedTopics) {
                 // 构建最终内容（去掉原文嵌入，改用 key_points）
                 finalContent += `#### ⏱️ ${topic.timestamp} ${topic.title}  🎬 [[${fileName}#t=${topic.timestamp}|${topic.timestamp}]]\n`;
                 if (topic.key_points && topic.key_points.length > 0) {
@@ -1795,10 +2031,27 @@ export default class TranscribePlugin extends Plugin {
 
             this.historySummaries += newHistory;
 
+            // 🛡️ 空内容防护：AI 返回的主题若被「时间戳向前漂移」过滤得一个不剩，
+            // finalContent 会是空串。空串写入会触发「假验证通过」并覆盖原有段落，
+            // 因此这里直接判定失败、保留原始转写，交给上层重试或断点续跑。
+            if (!finalContent || finalContent.trim().length === 0) {
+                console.error(`[批次 ${job.batchIndex + 1}] AI 输出为空（主题全部被时间戳过滤），保留原始转写`);
+                await this.markBatchAsFailed(job, editor, targetLeaf, "AI 输出主题全部被过滤");
+                if (this.currentTaskReport) {
+                    this.currentTaskReport.failedBatches++;
+                    this.currentTaskReport.errorLog.push(`批次 ${job.batchIndex + 1}: AI 输出主题全部被过滤`);
+                }
+                this.batchWriteStatus.set(job.batchIndex, { success: false, retryCount: 0, lastError: "AI 输出为空" });
+                notice.setMessage(`⚠️ [批次 ${job.batchIndex + 1}] AI 输出为空，已保留原始转写`);
+                setTimeout(() => notice.hide(), 3000);
+                return false;
+            }
+
             // --- 阶段四：写入笔记（带重试和验证） ---
             notice.setMessage(`✍️ [批次 ${job.batchIndex + 1}] 写入文档 (2/3)...`);
 
-            // 使用重试机制写入
+            // 🛡️ 插入失败不再直接跳过：写入失败只重试一次（safeEditorReplace 内部完成「尝试 + 1 次重试」），
+            // 仍失败则缓存内容并返回 false，由上层决定暂停还是兜底补写。
             const writeSuccess = await this.safeEditorReplace(
                 editor,
                 targetLeaf,
@@ -1807,25 +2060,61 @@ export default class TranscribePlugin extends Plugin {
                 job.batchIndex + 1,
                 notice
             );
+            if (!writeSuccess) this.batchContentCache.set(job.anchorId, finalContent);
 
+            // 本批次最终是否可判定为成功（写入通过 + 延迟校验确认内容仍在）
+            let batchOk = false;
             if (writeSuccess) {
-                this.batchWriteStatus.set(job.batchIndex, { success: true, retryCount: 0 });
-                // 🛡️ 即时校验：趁 AI 回复还在内存，确认内容确实落盘，被覆盖立即补写
-                await this.verifyAndRepairInsertion(editor, targetLeaf, job.anchorId, finalContent, job.batchIndex + 1, notice);
-                notice.setMessage(`✅ [批次 ${job.batchIndex + 1}] 处理完成！(3/3)`);
+                // 🛡️ 即时校验：趁 AI 回复还在内存，确认内容确实落盘，被覆盖立即补写。
+                // 注意必须看返回值——写入当时过了、但延迟校验发现内容被冲掉且补写失败时，
+                // 不能标成功、也不能把检查点标成 done（否则续跑会跳过这个其实缺失的分块）。
+                const verified = await this.verifyAndRepairInsertion(editor, targetLeaf, job.anchorId, finalContent, job.batchIndex + 1, notice);
+                if (verified) {
+                    batchOk = true;
+                    this.batchWriteStatus.set(job.batchIndex, { success: true, retryCount: 0 });
+                    // 💾 断点续跑：该批次已确认落盘，记录到检查点
+                    if (this.currentCheckpoint?.batches[job.batchIndex]) {
+                        this.currentCheckpoint.batches[job.batchIndex] = {
+                            done: true,
+                            segments: job.segments,
+                            content: finalContent
+                        };
+                        this.saveCheckpoint(this.currentCheckpoint);
+                    }
+                    notice.setMessage(`✅ [批次 ${job.batchIndex + 1}] 处理完成！(3/3)`);
+                } else {
+                    this.batchWriteStatus.set(job.batchIndex, {
+                        success: false,
+                        retryCount: 1,
+                        lastError: "写入后内容丢失且补写失败"
+                    });
+                    this.batchContentCache.set(job.anchorId, finalContent);
+                    if (this.currentCheckpoint?.batches[job.batchIndex]) {
+                        this.currentCheckpoint.batches[job.batchIndex] = {
+                            done: false,
+                            segments: job.segments,
+                            content: finalContent
+                        };
+                        this.saveCheckpoint(this.currentCheckpoint);
+                    }
+                    console.warn(`[批次 ${job.batchIndex + 1}] ⚠️ 写入后内容丢失且补写失败，已缓存待兜底巡检`);
+                    notice.setMessage(`⚠️ [批次 ${job.batchIndex + 1}] 内容未保住（已缓存，待兜底巡检）`);
+                }
             } else {
                 this.batchWriteStatus.set(job.batchIndex, {
                     success: false,
-                    retryCount: 3,
+                    retryCount: 1,
                     lastError: "锚点丢失或写入失败"
                 });
                 // 写入失败也缓存内容，留给绘图前兜底巡检补写
                 this.batchContentCache.set(job.anchorId, finalContent);
-                notice.setMessage(`⚠️ [批次 ${job.batchIndex + 1}] 写入失败：锚点丢失`);
+                notice.setMessage(`⚠️ [批次 ${job.batchIndex + 1}] 写入失败：锚点丢失（已缓存，稍后兜底补写）`);
             }
 
             setTimeout(() => notice.hide(), 2000);
-            return true;
+            // 🛑 返回真实结果：写入失败、或写入后内容没保住，都不再伪装成功，
+            //    让上层感知并触发暂停/续跑（batchOk 在上面的分支里已按校验结果置位）
+            return batchOk;
 
         } catch (e) {
             console.error(e);
@@ -1864,7 +2153,15 @@ export default class TranscribePlugin extends Plugin {
     ): Promise<boolean> {
         const startMarker = `%%${anchorId}_START%%`;
         const endMarker = `%%${anchorId}_END%%`;
-        const maxRetries = 3;
+        // 写入失败只重试一次（共 2 次尝试）：再失败就交给上层暂停/兜底补写，不反复刷盘
+        const maxRetries = 2;
+
+        // 🛡️ 空内容防护：空串写入会因 `''.includes('')===true` 造成「假验证通过」，
+        // 把原有段落覆盖成空。这里直接拒绝写入空内容，交由上层重试或断点续跑。
+        if (!newContent || newContent.trim().length === 0) {
+            console.warn(`[批次 ${batchIndex}] 拒绝写入空内容，保留原段落`);
+            return false;
+        }
 
         // 🔒 直接从 targetLeaf 获取文件对象，不依赖 editor 匹配
         const getNoteFile = (): TFile | null => {
@@ -2094,13 +2391,14 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 🛡️ 绘图前兜底巡检：逐一核对每个分块锚点区间，内容为空或仍是占位提示时，
      * 用内存缓存（batchContentCache）中的 AI 生成内容补写——不触发任何重新生成。
-     * 无缓存且缺失的批次只告警，不阻塞思维导图生成。
+     * @returns true = 所有分块都已确认有内容；false = 存在锚点缺失或无缓存可真失败的缺失分块，
+     *          调用方应暂停任务并报出错误详情，而不是带着缺失分块假装成功。
      */
-    async ensureAllSectionsWritten(editor: Editor, targetLeaf: WorkspaceLeaf, totalChunks: number, fileName: string) {
+    async ensureAllSectionsWritten(editor: Editor, targetLeaf: WorkspaceLeaf, totalChunks: number, fileName: string): Promise<boolean> {
         const noteFile = (targetLeaf.view as any).file as TFile;
         if (!(noteFile instanceof TFile)) {
             console.warn('[兜底巡检] 无法获取笔记文件，跳过巡检');
-            return;
+            return false;
         }
 
         const unrepaired: number[] = [];
@@ -2116,7 +2414,13 @@ export default class TranscribePlugin extends Plugin {
                     const endMarker = `%%${anchorId}_END%%`;
                     const s = content.indexOf(startMarker);
                     const e = content.indexOf(endMarker);
-                    if (s === -1 || e === -1 || e < s) continue;
+                    if (s === -1 || e === -1 || e < s) {
+                        // 锚点整段消失 = 该分块连写入位置都没了，必须记入未修复，
+                        // 否则巡检会「确认无误」，任务带着缺失分块假装成功。
+                        console.warn(`[兜底巡检] 批次 ${i + 1} 锚点缺失 (${anchorId})`);
+                        unrepaired.push(i + 1);
+                        continue;
+                    }
 
                     const section = content.substring(s + startMarker.length, e).trim();
                     const cached = this.batchContentCache.get(anchorId);
@@ -2128,6 +2432,8 @@ export default class TranscribePlugin extends Plugin {
                         if (cached && cached.trim()) {
                             list.push({ anchorId, batchIndex: i + 1, content: cached });
                         } else {
+                            // 无缓存 = ASR 没成功或 LLM 从未写入（真失败），不能伪装成「本段无语音」，
+                            // 记为未修复，交给上层暂停并在错误详情里点名。
                             unrepaired.push(i + 1);
                         }
                     }
@@ -2136,7 +2442,7 @@ export default class TranscribePlugin extends Plugin {
             });
 
             for (const r of repairs) {
-                console.warn(`[兜底巡检] 批次 ${r.batchIndex} 内容缺失，使用内存缓存补写 (anchor=${r.anchorId})`);
+                console.warn(`[兜底巡检] 批次 ${r.batchIndex} 内容缺失，用内存缓存补写 (anchor=${r.anchorId})`);
                 const ok = await this.safeEditorReplace(editor, targetLeaf, r.anchorId, r.content, r.batchIndex);
                 if (!ok) unrepaired.push(r.batchIndex);
             }
@@ -2151,8 +2457,10 @@ export default class TranscribePlugin extends Plugin {
                 }
                 new Notice(`⚠️ 第 ${unrepaired.join('、')} 部分内容缺失，未能自动恢复`, 8000);
             }
+            return unrepaired.length === 0;
         } catch (e) {
             console.warn('[兜底巡检] 巡检异常（不影响后续绘图）:', e);
+            return false;
         }
     }
 
@@ -2201,6 +2509,374 @@ export default class TranscribePlugin extends Plugin {
             }
         } catch (e) {
             console.error(`[批次 ${job.batchIndex}] markBatchAsFailed editor 回退也失败:`, e);
+        }
+    }
+
+    /**
+     * ⏸️ 暂停转写并报出错误详情
+     * 用于「确实处理不了的错误」：连续失败达到阈值，或兜底巡检仍无法修复的缺失分块。
+     * 在笔记末尾写入醒目的 danger 块、显示常驻 Notice、保存断点，供用户修复后「继续转写」。
+     */
+    private async pauseTranscriptionWithError(file: TFile, editor: Editor, targetLeaf: WorkspaceLeaf, totalChunks: number) {
+        const failed = new Set<number>();
+        this.batchWriteStatus.forEach((s, idx) => { if (s.success === false) failed.add(idx + 1); });
+        for (let i = 0; i < totalChunks; i++) {
+            if (!this.batchWriteStatus.has(i)) failed.add(i + 1);
+        }
+
+        const errors = (this.currentTaskReport?.errorLog ?? []).slice(-20);
+        const failedList = [...failed].sort((a, b) => a - b).map(n => `第 ${n} 部分`).join('、') || '(未知)';
+
+        const pauseBlock =
+            `\n\n> [!danger] ⏸️ 转写任务已暂停（${new Date().toLocaleString()}）\n` +
+            `> 视频：${file.basename}\n` +
+            `> 未完成 / 失败分块：${failedList}\n` +
+            `> \n` +
+            `> 错误详情：\n` +
+            (errors.length
+                ? errors.map(l => `>   ${l}`).join('\n')
+                : `>   (无详细错误)`);
+
+        // 💾 保存最终断点，确保最新进度落盘
+        if (this.currentCheckpoint) this.saveCheckpoint(this.currentCheckpoint);
+
+        try {
+            const noteFile = (targetLeaf.view as any).file as TFile;
+            if (noteFile instanceof TFile) {
+                // 持锁 read-modify-write；并避免反复暂停时把同一个 danger 块堆叠多次
+                await this.withFileLock(async () => {
+                    const current = await this.app.vault.read(noteFile);
+                    if (current.includes(`未完成 / 失败分块：${failedList}`)) {
+                        console.log('[暂停] 笔记中已存在相同的暂停说明，跳过重复写入');
+                        return;
+                    }
+                    await this.app.vault.modify(noteFile, current + pauseBlock);
+                });
+            } else {
+                editor.setValue(editor.getValue() + pauseBlock);
+            }
+        } catch (e) {
+            console.error('[暂停] 写入暂停标记失败:', e);
+        }
+
+        new Notice(
+            `⏸️ 转写已暂停：${failedList} 失败。修复后执行「▶️ 继续转写（断点续跑）」即可从已完成进度继续，无需重做`,
+            0
+        );
+        console.error('[暂停] 致命错误，任务已暂停。失败分块:', failedList, '错误:', errors);
+    }
+
+    /**
+     * ▶️ 继续转写（断点续跑）：从最新的断点检查点恢复，
+     * 跳过已完成的分块，只补做缺失的 ASR 转写与 LLM 总结，避免重复已完成的工作。
+     */
+    private async resumeFromCheckpoint() {
+        const candidates = this.listCheckpoints();
+        if (candidates.length === 0) {
+            new Notice('ℹ️ 没有找到可续跑的断点');
+            return;
+        }
+        const { checkpoint } = candidates[0];
+
+        // 校验 / 规范化检查点：损坏或写了一半的文件不能拿去跑，否则会算出错误的分块范围
+        if (typeof checkpoint.videoPath !== 'string' || !checkpoint.videoPath ||
+            typeof checkpoint.totalChunks !== 'number' || checkpoint.totalChunks <= 0 ||
+            typeof checkpoint.duration !== 'number' || checkpoint.duration <= 0) {
+            console.error('[断点] 检查点内容不完整，已跳过:', candidates[0].filePath, checkpoint);
+            new Notice('❌ 断点文件内容不完整，无法续跑');
+            return;
+        }
+        if (!Array.isArray(checkpoint.batches)) checkpoint.batches = [];
+        while (checkpoint.batches.length < checkpoint.totalChunks) checkpoint.batches.push({ done: false });
+
+        // 明确告知续的是哪一个任务的断点（避免多篇断点并存时误续）
+        const resumedName = checkpoint.videoPath.split('/').pop() || checkpoint.videoPath;
+        console.log(`[断点] 准备续跑: ${resumedName} | 文件: ${candidates[0].filePath}`);
+        new Notice(`▶️ 继续转写: ${resumedName}`, 4000);
+
+        const videoFile = this.app.vault.getAbstractFileByPath(checkpoint.videoPath);
+        const noteFile = this.app.vault.getAbstractFileByPath(checkpoint.notePath);
+        if (!(videoFile instanceof TFile) || !(noteFile instanceof TFile)) {
+            new Notice('❌ 断点对应的视频/笔记已不存在，无法续跑');
+            return;
+        }
+
+        if (this.isProcessing) {
+            new Notice('⏳ 已有转写任务在进行中，请稍候');
+            return;
+        }
+
+        const adapter = this.app.vault.adapter;
+        if (!(adapter instanceof FileSystemAdapter)) {
+            new Notice('非桌面环境不可用');
+            return;
+        }
+
+        this.ffmpegPath = path.join(adapter.getBasePath(), this.manifest.dir ?? '', 'ffmpeg.exe');
+        if (!fs.existsSync(this.ffmpegPath)) {
+            new Notice('找不到 ffmpeg.exe');
+            return;
+        }
+
+        // 先占锁再打开笔记：打开窗口要等 ~1 秒，这期间若不加锁，
+        // 第二次「继续转写」或「智能转写」会看到 isProcessing=false 而并发启动。
+        this.isProcessing = true;
+        this.currentTranscribingNotePath = noteFile.path;
+
+        // 打开笔记窗口，拿到 editor + leaf（异常必须自己接住，否则会成为 unhandled rejection）
+        let editor: Editor;
+        let leaf: WorkspaceLeaf;
+        try {
+            await this.openNoteInRightSidebar(noteFile);
+            await sleep(500);
+            let targetLeaf: WorkspaceLeaf | null = null;
+            this.app.workspace.iterateAllLeaves((l) => {
+                const f = (l.view as any).file as TFile;
+                if (f && f.path === noteFile.path && l.view instanceof MarkdownView) targetLeaf = l;
+            });
+            if (!targetLeaf) {
+                const { leaf: newLeaf } = await this.openTranscriptNote(videoFile);
+                targetLeaf = newLeaf;
+                await sleep(300);
+            }
+            if (!targetLeaf || !(targetLeaf.view instanceof MarkdownView)) {
+                throw new Error('未能获得可编辑的笔记视图');
+            }
+            editor = targetLeaf.view.editor;
+            leaf = targetLeaf;
+        } catch (e) {
+            console.error('[断点] 打开笔记失败:', e);
+            new Notice(`❌ 无法打开笔记，无法继续转写: ${errorMessage(e)}`);
+            this.isProcessing = false;
+            this.currentTranscribingNotePath = null;
+            return;
+        }
+
+        // 恢复实例状态
+        this.historySummaries = checkpoint.historySummaries ?? '';
+        this.allChapterSummaries = [...(checkpoint.allChapterSummaries ?? [])];
+        this.batchContentCache.clear();
+        // 跨任务清理：续跑前先清空，再由 doneFlags 重新标记已完成批次
+        this.batchWriteStatus.clear();
+        this.currentCheckpoint = checkpoint;
+        this.currentTaskReport = {
+            videoFileName: videoFile.name,
+            totalDuration: checkpoint.duration,
+            totalBatches: checkpoint.totalChunks,
+            successBatches: 0,
+            failedBatches: 0,
+            apiUsageLog: [],
+            errorLog: [],
+            llmCallRecords: [],
+            globalAnalysisSuccess: false,
+            mindmapSuccess: false,
+            startTime: new Date(),
+            endTime: new Date()
+        };
+
+        try {
+            const totalChunks = checkpoint.totalChunks;
+            const inputPath = path.join(adapter.getBasePath(), videoFile.path);
+            const allBatchJobs: BatchJob[] = new Array(totalChunks);
+            this.allBatchJobsRef = allBatchJobs;
+
+            // 🔍 续跑前先核对笔记的真实情况：
+            //   1) 检查点标 done 的分块，笔记里的内容也可能已被并发写入冲掉——不能盲信 done 标记，
+            //      否则这些分块会被永久跳过，陷入「暂停 → 续跑 → 再暂停」的死循环。
+            //   2) 锚点整段消失的分块根本写不进去，提前点名退出，别白跑一遍 ffmpeg + ASR。
+            const noteText = await this.app.vault.read(noteFile);
+            const sectionState = (anchorId: string): 'ok' | 'empty' | 'missing' => {
+                const startMarker = `%%${anchorId}_START%%`;
+                const endMarker = `%%${anchorId}_END%%`;
+                const s = noteText.indexOf(startMarker);
+                const e = noteText.indexOf(endMarker);
+                if (s === -1 || e === -1 || e < s) return 'missing';
+                const sec = noteText.substring(s + startMarker.length, e).trim();
+                if (sec.length === 0) return 'empty';
+                if (sec.startsWith('>') && sec.includes('⏳')) return 'empty'; // 仍是占位提示
+                return 'ok';
+            };
+
+            const doneFlags: boolean[] = [];
+            const hasSegments: boolean[] = [];
+            const rewriteOnly: number[] = [];   // 成品还在检查点里、只是没写进笔记 → 直接补写，不重跑 ASR/LLM
+            const anchorMissing: number[] = [];
+            for (let i = 0; i < totalChunks; i++) {
+                const b = checkpoint.batches?.[i];
+                const anchorId = `BATCH_${i}`;
+                const inNote = sectionState(anchorId);
+                const cached = b?.content && b.content.trim() ? b.content : '';
+                if (cached) this.batchContentCache.set(anchorId, cached);
+
+                if (inNote === 'missing') anchorMissing.push(i + 1);
+                if (b?.done === true && inNote === 'ok') {
+                    doneFlags[i] = true;
+                } else {
+                    doneFlags[i] = false;
+                    if (cached && inNote !== 'missing') rewriteOnly.push(i);
+                }
+                hasSegments[i] = !!(b?.segments && b.segments.length > 0);
+                allBatchJobs[i] = { segments: b?.segments ?? [], batchIndex: i, anchorId };
+            }
+            doneFlags.forEach((d, i) => { if (d) this.batchWriteStatus.set(i, { success: true, retryCount: 0 }); });
+
+            if (anchorMissing.length > 0) {
+                console.error(`[断点] 批次 ${anchorMissing.join('、')} 的锚点已在笔记中消失，无法续跑`);
+                new Notice(`❌ 第 ${anchorMissing.join('、')} 部分锚点缺失，无法写入；建议重跑「📝 智能转写」`, 0);
+                return;
+            }
+
+            const toDo: number[] = [];
+            for (let i = 0; i < totalChunks; i++) if (!doneFlags[i] && !rewriteOnly.includes(i)) toDo.push(i);
+
+            // 先把「检查点里已有成品」的分块补写回笔记（不调 LLM、不跑 ASR）
+            for (const i of rewriteOnly) {
+                const content = checkpoint.batches[i]!.content!;
+                const ok = await this.safeEditorReplace(editor, leaf, `BATCH_${i}`, content, i + 1);
+                if (ok) {
+                    this.batchWriteStatus.set(i, { success: true, retryCount: 0 });
+                    checkpoint.batches[i] = { done: true, segments: checkpoint.batches[i]?.segments, content };
+                    this.saveCheckpoint(checkpoint);
+                    console.log(`[续跑] 批次 ${i + 1} 用断点缓存补写成功（未重跑 ASR/LLM）`);
+                } else {
+                    this.batchWriteStatus.set(i, { success: false, retryCount: 1, lastError: '断点缓存补写失败' });
+                    if (this.currentTaskReport) {
+                        this.currentTaskReport.failedBatches++;
+                        this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1}: 断点缓存补写失败`);
+                    }
+                }
+            }
+
+            if (toDo.length === 0) {
+                if (rewriteOnly.length === 0) {
+                    new Notice('ℹ️ 该断点已完成，无需续跑');
+                    this.clearCheckpoint(videoFile.path);
+                    return;
+                }
+                new Notice(`ℹ️ 断点内容已补写 ${rewriteOnly.length} 个分块，进入全局校验`);
+            }
+
+            const apiKeys = (ASR_CONFIG.API_KEYS && ASR_CONFIG.API_KEYS.length > 0)
+                ? ASR_CONFIG.API_KEYS
+                : [ASR_CONFIG.API_KEY];
+            const maxConcurrent = Math.max(1, apiKeys.length * 2);
+
+            // ===== 阶段 A：为「没有转写文本」的批次补齐 ASR（并行） =====
+            const needAsr = toDo.filter(i => !hasSegments[i]);
+            let asrCursor = 0;
+            const asrWorker = async (workerId: number): Promise<void> => {
+                const apiKey = apiKeys[workerId % apiKeys.length];
+                while (true) {
+                    const idx = asrCursor++;
+                    if (idx >= needAsr.length) break;
+                    const i = needAsr[idx];
+                    const chunkStart = i * PROCESSING_CONFIG.CHUNK_SIZE;
+                    const isLastChunk = i === totalChunks - 1;
+                    const chunkDuration = isLastChunk
+                        ? (checkpoint.duration - chunkStart) + 5
+                        : PROCESSING_CONFIG.CHUNK_SIZE;
+                    const prefix = `[${i + 1}/${totalChunks}]`;
+                    const progressNotice = new Notice(`${prefix} ⏳ 续跑：提取音频...`, 0);
+                    try {
+                        const mp3Buffer = await convertChunkToMp3(this.ffmpegPath, inputPath, chunkStart, chunkDuration, progressNotice, prefix);
+                        const asrJson = await uploadToASR(mp3Buffer, `${videoFile.basename}_p${i}.mp3`, progressNotice, prefix, apiKey);
+                        const segments: Segment[] = [];
+                        if (asrJson.segments) {
+                            asrJson.segments.forEach((seg: any) => {
+                                segments.push({ start: seg.start + chunkStart, end: seg.end + chunkStart, text: (seg.text || '').trim() });
+                            });
+                        }
+                        allBatchJobs[i].segments = segments;
+                        hasSegments[i] = segments.length > 0;
+                        if (checkpoint.batches[i]) checkpoint.batches[i].segments = segments;
+                        else checkpoint.batches[i] = { done: false, segments };
+                        this.saveCheckpoint(checkpoint);
+                    } catch (e) {
+                        console.error(`[续跑] 批次 ${i + 1} ASR 失败:`, e);
+                        allBatchJobs[i].segments = [];
+                        hasSegments[i] = false;
+                    } finally {
+                        progressNotice.hide();
+                    }
+                }
+            };
+            const asrWorkers: Promise<void>[] = [];
+            for (let w = 0; w < Math.min(maxConcurrent, needAsr.length); w++) asrWorkers.push(asrWorker(w));
+            await Promise.all(asrWorkers);
+
+            // ===== 阶段 B：为所有未完成批次跑 LLM 总结（并行 worker） =====
+            let llmCursor = 0;
+            let llmFailed = 0;
+            let criticalError = false;
+            const MAX_LLM_FAILURES = 3;
+
+            const llmWorker = async (): Promise<void> => {
+                while (true) {
+                    const idx = llmCursor++;
+                    if (idx >= toDo.length || criticalError) break;
+                    const i = toDo[idx];
+                    const job = allBatchJobs[i];
+                    if (job.segments.length === 0) {
+                        this.batchWriteStatus.set(i, { success: false, retryCount: 0, lastError: 'ASR 转写失败' });
+                        if (this.currentTaskReport) {
+                            this.currentTaskReport.failedBatches++;
+                            this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1}: ASR 转写失败`);
+                        }
+                        llmFailed++;
+                        if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
+                        continue;
+                    }
+                    try {
+                        const result = await this.runBatchAnalysis(job, videoFile.name, editor, leaf, 0);
+                        if (result === false) {
+                            llmFailed++;
+                            if (this.currentTaskReport) this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1}: 分析失败`);
+                            if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
+                        } else {
+                            llmFailed = 0;
+                        }
+                    } catch (e) {
+                        console.error(`续跑 批次 ${i + 1} 异常:`, e);
+                        llmFailed++;
+                        if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
+                    }
+                }
+            };
+            const llmWorkers: Promise<void>[] = [];
+            for (let w = 0; w < Math.min(maxConcurrent, toDo.length); w++) llmWorkers.push(llmWorker());
+            await Promise.all(llmWorkers);
+
+            // ===== 阶段 C：兜底巡检 + 致命错误判定 =====
+            const allSectionsOk = await this.ensureAllSectionsWritten(editor, leaf, totalChunks, videoFile.name);
+            // 同样只看巡检结果：有缺失才暂停，避免误暂停内容其实完整的笔记
+            if (!allSectionsOk) {
+                await this.pauseTranscriptionWithError(videoFile, editor, leaf, totalChunks);
+                return;
+            }
+
+            // ===== 阶段 D：全局校验 + 思维导图 + 报告 =====
+            new Notice(`✨ 分块续跑完毕，开始全局校验与修正`);
+            await this.runGlobalCorrectionAnalysis(allBatchJobs, videoFile.name, editor, leaf, checkpoint.duration);
+            this.currentTaskReport!.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
+
+            new Notice('🎉 断点续跑完成！', 0);
+            await this.generateMindMap(videoFile);
+            this.currentTaskReport!.mindmapSuccess = true;
+
+            if (noteFile instanceof TFile) {
+                await this.generateAndAppendReportToFile(noteFile);
+            }
+            this.clearCheckpoint(videoFile.path);
+            new Notice('✅ 断点续跑完成，检查点已清除', 5000);
+        } catch (error) {
+            console.error('续跑失败:', error);
+            new Notice(`❌ 续跑失败: ${error.message}`, 8000);
+        } finally {
+            this.isProcessing = false;
+            this.currentTranscribingNotePath = null;
+            this.activeAiCount = 0;
+            this.allBatchJobsRef = null;
+            this.currentCheckpoint = null;
         }
     }
 

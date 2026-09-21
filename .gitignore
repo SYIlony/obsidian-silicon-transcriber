@@ -4,3 +4,6 @@ node_modules/
 *.log
 repair-missing.log
 日志
+.fix-tasks/
+.backup-timestamp-fix-20260921/
+checkpoints/
