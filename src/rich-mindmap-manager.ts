@@ -8,7 +8,7 @@
  * 4. 原子合并与文件同步：支持复制模式 (Copy) 与 剪切迁移模式 (Move)
  */
 
-import { TFile } from 'obsidian';
+import { App, TFile } from 'obsidian';
 
 /* ==================== 基础数据类型 ==================== */
 
@@ -107,6 +107,35 @@ export function sanitizeNodeDisplayTitle(text: string | undefined): string {
         .replace(/&quot;/g, '"')
         .trim();
     return cleaned.length > 0 ? cleaned : '(空白节点)';
+}
+
+/**
+ * 智能判定文件是否为思维导图（不依赖死板的 -rich.md 后缀，穿透识别 frontmatter 元数据与内容结构）
+ */
+export function isMindmapFile(app: App, file: TFile, content?: string): boolean {
+    if (file.extension !== 'md') return false;
+
+    // 1. 优先查 Obsidian 内存中的 MetadataCache frontmatter（零耗时，改名后依然精准识别）
+    const cache = app.metadataCache.getFileCache(file);
+    const fmPlugin = cache?.frontmatter?.['mindmap-plugin'];
+    if (fmPlugin === 'rich' || fmPlugin === 'basic') return true;
+
+    // 2. 宽松文件名匹配（包含 🧠 或 rich）
+    if (file.basename.includes('🧠') || file.name.includes('rich') || file.name.endsWith('-rich.md')) {
+        return true;
+    }
+
+    // 3. 内容特征检测（若提供了文本，检查是否包含 MarkMind 的核心 JSON 数据块）
+    if (content) {
+        if (content.includes('mindmap-plugin: rich') || content.includes('mindmap-plugin: basic')) {
+            return true;
+        }
+        if (content.includes('```json') && content.includes('"mindData"')) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /* ==================== 1. 思维导图解析与全覆盖分组算法 ==================== */

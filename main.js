@@ -3615,6 +3615,27 @@ function sanitizeNodeDisplayTitle(text) {
   const cleaned = text.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').trim();
   return cleaned.length > 0 ? cleaned : "(\u7A7A\u767D\u8282\u70B9)";
 }
+function isMindmapFile(app, file, content) {
+  var _a;
+  if (file.extension !== "md")
+    return false;
+  const cache = app.metadataCache.getFileCache(file);
+  const fmPlugin = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a["mindmap-plugin"];
+  if (fmPlugin === "rich" || fmPlugin === "basic")
+    return true;
+  if (file.basename.includes("\u{1F9E0}") || file.name.includes("rich") || file.name.endsWith("-rich.md")) {
+    return true;
+  }
+  if (content) {
+    if (content.includes("mindmap-plugin: rich") || content.includes("mindmap-plugin: basic")) {
+      return true;
+    }
+    if (content.includes("```json") && content.includes('"mindData"')) {
+      return true;
+    }
+  }
+  return false;
+}
 function parseAndAnalyzeRichMindmap(markdownContent) {
   const match = markdownContent.match(RICH_FENCE_RE2);
   if (!match || match.index === void 0) {
@@ -4028,16 +4049,20 @@ var TargetMindmapPickerModal = class extends import_obsidian6.FuzzySuggestModal 
     super(app);
     this.excludeFile = excludeFile;
     this.onPick = onPick;
-    this.setPlaceholder("\u641C\u7D22\u601D\u7EF4\u5BFC\u56FE\uFF08\u6587\u4EF6\u540D\u542B \u{1F9E0} \u6216 -rich\uFF09\u2026");
+    this.setPlaceholder("\u641C\u7D22\u601D\u7EF4\u5BFC\u56FE\uFF08\u8F93\u5165\u5173\u952E\u8BCD\u641C\u7D22\u5168\u5E93\u5BFC\u56FE\uFF0C\u652F\u6301\u5DF2\u91CD\u547D\u540D\u6587\u4EF6\uFF09\u2026");
   }
   getItems() {
-    return this.app.vault.getMarkdownFiles().filter((f) => (!this.excludeFile || f.path !== this.excludeFile.path) && (f.basename.includes("\u{1F9E0}") || f.basename.includes("rich") || f.name.endsWith("-rich.md"))).sort((a, b) => {
+    return this.app.vault.getMarkdownFiles().filter((f) => (!this.excludeFile || f.path !== this.excludeFile.path) && isMindmapFile(this.app, f)).sort((a, b) => {
       var _a, _b, _c, _d;
       return ((_b = (_a = b.stat) == null ? void 0 : _a.mtime) != null ? _b : 0) - ((_d = (_c = a.stat) == null ? void 0 : _c.mtime) != null ? _d : 0);
     });
   }
   getItemText(item) {
-    return item.path;
+    var _a;
+    const cache = this.app.metadataCache.getFileCache(item);
+    const fmPlugin = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a["mindmap-plugin"];
+    const tag = fmPlugin === "rich" ? "\u{1F9E0} [Rich]" : fmPlugin === "basic" ? "\u{1F4DD} [Basic]" : "\u{1F9E0} [\u5BFC\u56FE]";
+    return `${tag} ${item.path}`;
   }
   onChooseItem(item) {
     this.onPick(item);
@@ -4473,7 +4498,10 @@ var TranscribePlugin = class extends import_obsidian7.Plugin {
       parseAndAnalyze: parseAndAnalyzeRichMindmap,
       migrateGroups: migrateMindmapGroups,
       generateContent: generateMindmapContent,
-      generatePartialContent: generatePartialMindmapContent
+      generatePartialContent: generatePartialMindmapContent,
+      isMindmapFile: (file, content) => isMindmapFile(this.app, file, content),
+      TargetMindmapPickerModal,
+      MindmapBranchMigrateModal
     };
   }
   /**
@@ -4742,7 +4770,7 @@ ${text}
     });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian7.TFile && file.extension === "md" && (file.basename.includes("\u{1F9E0}") || file.name.endsWith("-rich.md"))) {
+        if (file instanceof import_obsidian7.TFile && isMindmapFile(this.app, file)) {
           menu.addItem((item) => {
             item.setTitle("\u{1F500} \u7EC4\u88C5\u4E0E\u8FC1\u79FB\u601D\u7EF4\u5BFC\u56FE\u5206\u652F...").setIcon("git-fork").onClick(() => {
               new MindmapBranchMigrateModal(this.app, file).open();
@@ -7515,14 +7543,25 @@ markmap:
     let targetFile = file;
     if (!targetFile) {
       const activeFile = this.app.workspace.getActiveFile();
-      if (activeFile && (activeFile.basename.includes("\u{1F9E0}") || activeFile.name.endsWith("-rich.md"))) {
-        targetFile = activeFile;
+      if (activeFile && activeFile.extension === "md") {
+        if (isMindmapFile(this.app, activeFile)) {
+          targetFile = activeFile;
+        } else {
+          try {
+            const content = await this.app.vault.read(activeFile);
+            if (isMindmapFile(this.app, activeFile, content)) {
+              targetFile = activeFile;
+            }
+          } catch (e) {
+          }
+        }
       }
     }
     if (targetFile) {
       new MindmapBranchMigrateModal(this.app, targetFile).open();
       return;
     }
+    new import_obsidian7.Notice("\u2139\uFE0F \u5F53\u524D\u6253\u5F00\u7684\u6587\u4EF6\u4E0D\u662F\u601D\u7EF4\u5BFC\u56FE\uFF0C\u8BF7\u9009\u62E9\u8981\u62C6\u5206\u8FC1\u79FB\u7684\u5BFC\u56FE");
     new TargetMindmapPickerModal(this.app, null, (chosen) => {
       new MindmapBranchMigrateModal(this.app, chosen).open();
     }).open();

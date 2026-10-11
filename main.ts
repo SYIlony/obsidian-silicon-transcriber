@@ -67,7 +67,8 @@ import {
     MindmapBranchMigrateModal,
     TargetMindmapPickerModal,
     parseAndAnalyzeRichMindmap,
-    migrateMindmapGroups
+    migrateMindmapGroups,
+    isMindmapFile
 } from './src';
 
 /**
@@ -505,7 +506,7 @@ export default class TranscribePlugin extends Plugin {
         // 🔀 在文件管理器右键菜单中增加入口
         this.registerEvent(
             this.app.workspace.on('file-menu', (menu, file) => {
-                if (file instanceof TFile && file.extension === 'md' && (file.basename.includes('🧠') || file.name.endsWith('-rich.md'))) {
+                if (file instanceof TFile && isMindmapFile(this.app, file)) {
                     menu.addItem((item) => {
                         item.setTitle('🔀 组装与迁移思维导图分支...')
                             .setIcon('git-fork')
@@ -3846,8 +3847,20 @@ markmap:
         let targetFile = file;
         if (!targetFile) {
             const activeFile = this.app.workspace.getActiveFile();
-            if (activeFile && (activeFile.basename.includes('🧠') || activeFile.name.endsWith('-rich.md'))) {
-                targetFile = activeFile;
+            if (activeFile && activeFile.extension === 'md') {
+                if (isMindmapFile(this.app, activeFile)) {
+                    targetFile = activeFile;
+                } else {
+                    // 若 frontmatter 尚未缓存，读取文件内容做内容级特征判定
+                    try {
+                        const content = await this.app.vault.read(activeFile);
+                        if (isMindmapFile(this.app, activeFile, content)) {
+                            targetFile = activeFile;
+                        }
+                    } catch {
+                        // 忽略读取错误
+                    }
+                }
             }
         }
 
@@ -3856,7 +3869,8 @@ markmap:
             return;
         }
 
-        // 若当前未处于思维导图，弹出选择器让用户先选择源导图
+        new Notice('ℹ️ 当前打开的文件不是思维导图，请选择要拆分迁移的导图');
+        // 若当前未处于思维导图，弹出选择器让用户先选择源导图（支持全库重命名后的导图）
         new TargetMindmapPickerModal(this.app, null, (chosen) => {
             new MindmapBranchMigrateModal(this.app, chosen).open();
         }).open();
@@ -3871,5 +3885,8 @@ markmap:
         migrateGroups: migrateMindmapGroups,
         generateContent: generateMindmapContent,
         generatePartialContent: generatePartialMindmapContent,
+        isMindmapFile: (file: TFile, content?: string) => isMindmapFile(this.app, file, content),
+        TargetMindmapPickerModal,
+        MindmapBranchMigrateModal,
     };
 }

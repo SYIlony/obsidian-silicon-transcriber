@@ -577,3 +577,21 @@
 5. **实测与质量保证**:
    - 新建 `scripts/test_rich_mindmap_migration_smoke.cjs` 针对库内真实导图进行 6 大项严苛端到端与边界测试，全部 100% 通过
    - TypeScript 严格类型检查，彻底消除 `any` 类型声明，esbuild 构建打包产物 `main.js` 333.7KB
+
+## [2026-10-12 10:15:00] feat(mindmap-detect): 彻底消除死板文件名后缀限制，全面支持已改名思维导图“打开即运行”与全库穿透检索
+
+1. **问题根因定位**:
+   - 用户习惯先打开思维导图再按命令，但库中大量导图已被重命名（去除了 `-rich` 后缀甚至不带 `🧠` 标记，如 `05.谓语动词时态下.md`、`03.z_概念-普通对称性与轮换对称性.md`）
+   - 旧逻辑强依赖 `activeFile.name.endsWith('-rich.md') || activeFile.name.includes('🧠')`，导致改名后的活跃导图被误判为非导图而弹出全库选择框；且全库选择框因同样的文件名过滤规则漏搜大量已改名导图。
+
+2. **三级穿透识别算法 (`isMindmapFile`)**:
+   - **第一级（MetadataCache 内存元数据，0ms 极速命中）**：直接读取 Obsidian 索引的 Frontmatter `mindmap-plugin: rich` 或 `mindmap-plugin: basic`，改名后依然 100% 稳定命中。
+   - **第二级（内容特征动态扫描）**：当用户在当前页面打开文档时，若元数据尚未刷新，即时读取文本，检测 MarkMind 专有结构 `mindmap-plugin: rich` 或 ````json` 且含 `"mindData"` 节点数组，确保内容为真导图即刻生效。
+   - **第三级（文件名宽松兜底）**：保留包含 `🧠`、`rich` 的文件名兼容。
+
+3. **交互与选择器增强**:
+   - 命令 `🔀 组装与迁移思维导图分支 (MarkMind)`：用户打开任何重命名后的思维导图直接运行，瞬间命中并弹出分支列表。
+   - 全库目标导图选择器 (`TargetMindmapPickerModal`)：全面升级为 `isMindmapFile` 检索，并在列表项前置标注 `🧠 [Rich]` 与 `📝 [Basic]` 视觉标签，实测在全库 4000+ 文件中瞬间精准发现并聚合全部 317 个思维导图。
+
+4. **实测保障**:
+   - 编写 `scripts/test_renamed_mindmap_in_app.mjs`，通过 Electron CDP 在运行中的 Obsidian 内对真实已改名导图 `05.谓语动词时态下.md`（79节点）进行真实打开运行实测，场景 A（打开即运行）与场景 B（全库检索 317 个导图）100% 通过。

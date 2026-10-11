@@ -15,7 +15,8 @@ import {
     migrateMindmapGroups,
     MindmapAnalysisResult,
     MindmapGroup,
-    MigrateMode
+    MigrateMode,
+    isMindmapFile
 } from './rich-mindmap-manager';
 
 /**
@@ -29,17 +30,20 @@ export class TargetMindmapPickerModal extends FuzzySuggestModal<TFile> {
         super(app);
         this.excludeFile = excludeFile;
         this.onPick = onPick;
-        this.setPlaceholder('搜索思维导图（文件名含 🧠 或 -rich）…');
+        this.setPlaceholder('搜索思维导图（输入关键词搜索全库导图，支持已重命名文件）…');
     }
 
     getItems(): TFile[] {
         return this.app.vault.getMarkdownFiles()
-            .filter(f => (!this.excludeFile || f.path !== this.excludeFile.path) && (f.basename.includes('🧠') || f.basename.includes('rich') || f.name.endsWith('-rich.md')))
+            .filter(f => (!this.excludeFile || f.path !== this.excludeFile.path) && isMindmapFile(this.app, f))
             .sort((a, b) => (b.stat?.mtime ?? 0) - (a.stat?.mtime ?? 0));
     }
 
     getItemText(item: TFile): string {
-        return item.path;
+        const cache = this.app.metadataCache.getFileCache(item);
+        const fmPlugin = cache?.frontmatter?.['mindmap-plugin'];
+        const tag = fmPlugin === 'rich' ? '🧠 [Rich]' : (fmPlugin === 'basic' ? '📝 [Basic]' : '🧠 [导图]');
+        return `${tag} ${item.path}`;
     }
 
     onChooseItem(item: TFile): void {
