@@ -242,10 +242,13 @@ silicon-transcriber/
 
 ```typescript
 async onload() {
-    // 1. 注册主从视图联动事件
-    this.registerEvent(
-        this.app.workspace.on('active-leaf-change', ...)
-    );
+    // 1. 注册主从视图联动：包装 WorkspaceLeaf.prototype.openFile（"真正打开文件"的唯一入口）
+    //    不用 workspace.on('file-open') —— 它的语义是"活动文件变化"，点击播放画面也会误触发
+    this.patchLeafOpenFile();
+    //    启动恢复工作区走 leaf.setViewState（不经 openFile），用 onLayoutReady 兜底
+    this.app.workspace.onLayoutReady(() => this.handleInitialMediaOpen());
+    //    播放画面右键联动（capture 阶段 contextmenu）
+    this.registerDomEvent(document, 'contextmenu', (evt) => this.handleMediaContextMenu(evt), { capture: true });
 
     // 2. 注册"智能转写"命令
     this.addCommand({ id: 'transcribe-v37-stable-fix', ... });
@@ -258,16 +261,29 @@ async onload() {
 **主从视图联动逻辑:**
 
 ```
-用户点击视频 
+触发方式一：真正"打开"视频文件（包装 WorkspaceLeaf.openFile：文件列表点开 / 链接跳转 /
+            拖拽 / 新窗口；启动恢复工作区由 onLayoutReady 兜底补触发）
+触发方式二：在视频播放画面上右击（contextmenu，capture 阶段监听）
     ↓
-检查是否为媒体文件 (mp4/mp3/wav/m4a/mov)
+过滤：必须是媒体文件 (mp4/mp3/wav/m4a/mov)；只开在侧边栏里的不参与联动
     ↓
-计算对应笔记路径: {视频目录}/📝智能笔记/📝智能笔记 - {视频名}.md
+计算对应笔记路径: {视频目录}/📝智能笔记/📝{视频名}.md
     ↓
 检查笔记是否存在
-    ├── 存在 → 在右侧边栏打开
+    ├── 存在 → 在右侧边栏打开（已在右侧打开则激活并选中它的标签页，不重复打开文件）
     └── 不存在 → 不做任何操作
 ```
+
+> 注意：**不要改回 `workspace.on('file-open')`** —— Obsidian 里 `file-open` 的实际语义是
+> "活动文件变化"（app.js `activeLeafEvents`），点击播放画面暂停/播放会把活动文件从侧栏笔记
+> 切回视频，同样会触发（表现为"点一下暂停右侧内容就切换 + 焦点被抢"）。
+> 现在只有上述两种明确动作才切换右侧。
+>
+> 也不要在 `openNoteForMediaFile()` 里加"右侧已显示该笔记就提前 return"的所谓防重复守卫：
+> 笔记已在右侧开着时右键会直接变成"什么都不发生"（2026-09-25 已踩过一次，详见 `docs/DEV_LOG.md`）。
+> 已打开的情形交给 `openNoteInRightSidebar` 的精确匹配分支（`setActiveLeaf` 会选中标签页）。
+>
+> 回归测试：`node scripts/test_media_linkage_smoke.cjs`
 
 ---
 

@@ -418,10 +418,29 @@ export default class TranscribePlugin extends Plugin {
         this.registerObsidianProtocolHandler('silicon-jump', async (params) => {
             await this.handleSiliconJump(params);
         });
-        // 🔗 注册主从视图联动：左边切视频，右边自动切笔记
+        // 🔗 注册主从视图联动：视频被「真正打开」→ 右边自动切笔记
+        //    为什么不用 workspace.on('file-open')：Obsidian 里 file-open 的实际语义是"活动文件变化"
+        //    （app.js activeLeafEvents：activeFile 变了就 trigger），点击播放画面暂停/播放会把活动文件
+        //    从侧栏笔记切回视频，同样会触发 —— 表现就是"点一下暂停右侧内容就切换 + 焦点被抢"。
+        //    改为包装 WorkspaceLeaf.prototype.openFile（"打开文件"的唯一入口）：
+        //    点击窗格 / 标签页只是 setActiveLeaf 激活，不会经过 openFile
+        this.patchLeafOpenFile();
+        // 兜底：启动恢复工作区走的是 leaf.setViewState（不经过 openFile），补一次"打开时联动"
+        this.app.workspace.onLayoutReady(() => {
+            this.handleInitialMediaOpen();
+        });
+
+        // 🖱️ 视频播放画面上「右击」→ 手动把右侧切到对应智能笔记
+        //    （capture 阶段监听：播放器即使 stopPropagation 也能收到；不 preventDefault，原生菜单照常）
+        this.registerDomEvent(document, 'contextmenu', (evt: MouseEvent) => {
+            this.handleMediaContextMenu(evt);
+        }, { capture: true });
+        // 弹出窗口（popout）中的播放画面同样支持右键联动
         this.registerEvent(
-            this.app.workspace.on('active-leaf-change', async (leaf) => {
-                await this.handleLeafChange(leaf);
+            this.app.workspace.on('window-open', (_workspaceWindow, win) => {
+                this.registerDomEvent(win.document, 'contextmenu', (evt: MouseEvent) => {
+                    this.handleMediaContextMenu(evt);
+                }, { capture: true });
             })
         );
 
@@ -694,24 +713,139 @@ export default class TranscribePlugin extends Plugin {
     }
 
     /**
-     * 处理窗口切换事件（主从视图联动）
+     * 包装 WorkspaceLeaf.prototype.openFile：文件被真正「打开」时才联动右侧智能笔记
+     * 覆盖：资源管理器点开 / 链接跳转 / 拖拽 / 新窗口 / 其它插件调 openFile
+     * 不覆盖：点击播放画面暂停、点标签页、点文件列表选中（都只走 setActiveLeaf 激活窗格）
+     * 叠加在其它插件（如 media-extended）已有的包装之上；卸载时仅当自己仍在外层才还原
      */
-    private async handleLeafChange(leaf: WorkspaceLeaf | null) {
-        if (!leaf || !leaf.view || !(leaf.view as any).file) return;
+    private patchLeafOpenFile() {
+        const leafProto = WorkspaceLeaf.prototype as unknown as {
+            openFile: (...args: unknown[]) => unknown;
+        };
+        const original = leafProto.openFile;
+        if (typeof original !== 'function') {
+            console.warn('[主从联动] WorkspaceLeaf.openFile 不存在，跳过包装');
+            return;
+        }
+        const plugin = this;
+        const wrapped = function (this: WorkspaceLeaf, ...args: unknown[]): unknown {
+            const result = original.apply(this, args);
+            const settle = () => { void plugin.handleMediaLeafOpened(this, args[0]); };
+            if (result && typeof (result as Promise<unknown>).then === 'function') {
+                // 打开失败（文件不存在等）不联动
+                (result as Promise<unknown>).then(settle, () => { /* ignore */ });
+            } else {
+                settle();
+            }
+            return result;
+        };
+        leafProto.openFile = wrapped;
+        this.register(() => {
+            if (leafProto.openFile === wrapped) leafProto.openFile = original;
+        });
+    }
+
+    /** openFile 真正打开了一个主区媒体文件 → 联动右侧智能笔记 */
+    private async handleMediaLeafOpened(leaf: WorkspaceLeaf, file: unknown) {
+        try {
+            if (!(file instanceof TFile)) return;
+            if (!isSupportedMediaExtension(file.extension)) return;
+            // 打开失败 / 已被跳转覆盖 → 不联动
+            if (viewFileOf(leaf.view) !== file) return;
+            // 侧边栏里的打开不参与联动（右侧边栏是留给智能笔记的）
+            let root: unknown = null;
+            try { root = leaf.getRoot(); } catch { /* 未挂载的叶子按主区处理 */ }
+            if (root === this.app.workspace.rightSplit || root === this.app.workspace.leftSplit) return;
+            if (this.isFileOpenOnlyInSidebars(file)) return;
+
+            await this.openNoteForMediaFile(file);
+        } catch (e) {
+            console.warn('[主从联动] 打开视频联动失败:', e);
+        }
+    }
+
+    /** 启动恢复工作区：当前激活文件是媒体文件时补一次联动（恢复走 leaf.setViewState，不经过 openFile） */
+    private handleInitialMediaOpen() {
+        try {
+            const file = this.app.workspace.getActiveFile();
+            if (!file || !isSupportedMediaExtension(file.extension)) return;
+            if (this.isFileOpenOnlyInSidebars(file)) return;
+            void this.openNoteForMediaFile(file);
+        } catch (e) {
+            console.warn('[主从联动] 启动恢复联动失败:', e);
+        }
+    }
+
+    /**
+     * 视频播放画面上「右击」→ 把右侧边栏切到对应智能笔记
+     * 只认窗格内容区（.view-content，即播放画面本身）上的右击：
+     * 标签页、窗格头部（⋯ 菜单所在区域）、侧边栏一律不响应；原生右键菜单照常弹出
+     */
+    private handleMediaContextMenu(evt: MouseEvent) {
+        const target = evt.target instanceof HTMLElement ? evt.target : null;
+        if (!target) return;
+
+        const contentEl = target.closest('.view-content');
+        if (!contentEl) return;
+
+        const leaf = this.findLeafByContentEl(contentEl);
+        if (!leaf || !leaf.view) return;
 
         const leafRoot = leaf.getRoot();
         if (leafRoot === this.app.workspace.rightSplit || leafRoot === this.app.workspace.leftSplit) return;
 
-        const currentFile = (leaf.view as any).file as TFile;
-        if (!currentFile || !isSupportedMediaExtension(currentFile.extension)) return;
+        const file = viewFileOf(leaf.view);
+        if (!file || !isSupportedMediaExtension(file.extension)) return;
 
-        const videoDir = currentFile.parent?.path === '/' ? '' : currentFile.parent?.path || '';
-        const { notePath } = calculateNotePaths(videoDir, currentFile.basename);
-        const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+        void this.openNoteForMediaFile(file);
+    }
 
-        if (noteFile instanceof TFile) {
-            // 直接调用新的、更强大的打开函数
-            await this.openNoteInRightSidebar(noteFile);
+    /**
+     * 通过播放画面 DOM 反查所属窗格
+     * （View.containerEl = 该窗格的 .workspace-leaf-content，其内部才是 .view-content）
+     */
+    private findLeafByContentEl(contentEl: Element): WorkspaceLeaf | null {
+        let found: WorkspaceLeaf | null = null;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (found) return;
+            const view = leaf.view;
+            if (view && view.containerEl && view.containerEl.contains(contentEl)) found = leaf;
+        });
+        return found;
+    }
+
+    /**
+     * 该文件是否"只"开在左右侧边栏里
+     * 布局里找不到该文件时返回 false（放行，避免 file-open 时序问题漏触发联动）
+     */
+    private isFileOpenOnlyInSidebars(file: TFile): boolean {
+        let inSidebar = false;
+        let elsewhere = false;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (viewFileOf(leaf.view) !== file) return;
+            const root = leaf.getRoot();
+            if (root === this.app.workspace.rightSplit || root === this.app.workspace.leftSplit) inSidebar = true;
+            else elsewhere = true;
+        });
+        return inSidebar && !elsewhere;
+    }
+
+    /** 计算媒体文件对应的智能笔记并切到右侧边栏（笔记不存在则什么都不做） */
+    private async openNoteForMediaFile(mediaFile: TFile) {
+        try {
+            const videoDir = mediaFile.parent?.path === '/' ? '' : mediaFile.parent?.path || '';
+            const { notePath } = calculateNotePaths(videoDir, mediaFile.basename);
+            const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+
+            if (noteFile instanceof TFile) {
+                // 直接调用新的、更强大的打开函数
+                // （笔记已在右侧打开时，openNoteInRightSidebar 会激活并选中它的标签页 —— 不要在此处提前 return，
+                //   否则右键会变成"什么都不发生"：见 2026-09-25 第二条日志）
+                await this.openNoteInRightSidebar(noteFile);
+            }
+        } catch (e) {
+            // 右键/打开视频属于"顺带联动"，失败不应抛成未处理异常打断用户操作
+            console.warn('[主从联动] 打开对应智能笔记失败:', e);
         }
     }
 
@@ -1234,7 +1368,6 @@ export default class TranscribePlugin extends Plugin {
             let llmCompletedCount = 0;
             let llmFailedCount = 0;
             let llmCriticalError = false;
-            const MAX_LLM_FAILURES = 3; // 连续失败阈值
             let llmResolvers: (() => void)[] = [];
 
             const wakeUpLlmWorker = () => {
@@ -1262,23 +1395,20 @@ export default class TranscribePlugin extends Plugin {
                             const result = await this.runBatchAnalysis(job, file.name, editor, targetLeaf, providerIdx);
                             if (result === false) {
                                 llmFailedCount++;
-                                console.error(`⚠️ LLM 批次 ${batchIdx} 失败，累计失败: ${llmFailedCount}/${MAX_LLM_FAILURES}`);
-                                if (llmFailedCount >= MAX_LLM_FAILURES) {
-                                    llmCriticalError = true;
-                                    console.error(`❌ LLM 连续失败达到阈值，终止剩余分析`);
-                                    new Notice(`❌ LLM 连续失败 ${MAX_LLM_FAILURES} 次，已终止分析`, 8000);
-                                }
+                                llmCriticalError = true;
+                                console.error(`❌ [批次 ${batchIdx + 1}] 分析失败（重试耗尽），立即暂停任务以保护笔记完整性`);
+                                new Notice(`❌ [第 ${batchIdx + 1} 部分] 分析失败，转写任务已安全暂停（防错误扩大）`, 0);
+                                // 立即清空剩余 LLM 队列，避免无谓消耗后续批次
+                                llmQueue.length = 0;
                             } else {
-                                llmFailedCount = 0; // 成功后重置计数
+                                llmFailedCount = 0;
                             }
                         } catch (e) {
-                            console.error(`LLM 总结批次 ${batchIdx} 遭遇异常:`, e);
+                            console.error(`LLM 总结批次 ${batchIdx} 遭遇未捕获异常:`, e);
                             llmFailedCount++;
-                            if (llmFailedCount >= MAX_LLM_FAILURES) {
-                                llmCriticalError = true;
-                                console.error(`❌ LLM 连续失败达到阈值，终止剩余分析`);
-                                new Notice(`❌ LLM 连续失败 ${MAX_LLM_FAILURES} 次，已终止分析`, 8000);
-                            }
+                            llmCriticalError = true;
+                            new Notice(`❌ [第 ${batchIdx + 1} 部分] 处理异常: ${e?.message || e}，已暂停任务`, 0);
+                            llmQueue.length = 0;
                         }
                     }
 
@@ -1404,9 +1534,10 @@ export default class TranscribePlugin extends Plugin {
             // 🛡️ 绘图前兜底巡检：用内存缓存补写缺失分块（无需重新生成 AI 内容）
             const allSectionsOk = await this.ensureAllSectionsWritten(editor, targetLeaf, totalChunks, file.name);
 
-            // 🛑 暂停判定只看「兜底巡检后是否仍有缺失」：不会因为「连续失败但内容都被巡检补回来了」
-            //    而误暂停一篇其实完好的笔记；真正的缺失（含根本没跑到的批次）一定会被巡检点出来。
-            if (!allSectionsOk) {
+            // 🛑 严格错误拦截：同时核查巡检结果、batchWriteStatus 状态、以及 llmCriticalError 标志
+            const hasAnyFailedStatus = Array.from(this.batchWriteStatus.values()).some(s => s.success === false);
+            if (!allSectionsOk || hasAnyFailedStatus || llmCriticalError) {
+                console.error(`[转写中断] 检测到失败或未完成分块 (allSectionsOk=${allSectionsOk}, hasAnyFailedStatus=${hasAnyFailedStatus}, llmCriticalError=${llmCriticalError})，坚决终止进入全局校验`);
                 await this.pauseTranscriptionWithError(file, editor, targetLeaf, totalChunks);
                 return;
             }
@@ -2424,16 +2555,28 @@ export default class TranscribePlugin extends Plugin {
 
                     const section = content.substring(s + startMarker.length, e).trim();
                     const cached = this.batchContentCache.get(anchorId);
+                    const writeStatus = this.batchWriteStatus.get(i);
                     const isEmpty = section.length === 0;
-                    // 仍是"⏳ 提取/等待分析"类占位提示，而内存里已有真实内容 → 视为缺失
-                    const isPlaceholder = !isEmpty && section.startsWith('>') && section.includes('⏳');
+                    // 包含等待占位符（例如：> [!info] ⏳ 提取中...）
+                    const isPlaceholder = !isEmpty && section.includes('⏳');
+                    // 包含失败标记或错误提示（例如：> [!danger] ❌ 第 X 部分分析失败）
+                    const isFailureBlock = !isEmpty && (
+                        section.includes('[!danger]') || 
+                        section.includes('分析失败') || 
+                        section.includes('❌') ||
+                        section.includes('⚠️ 未完成')
+                    );
+                    const isStatusFailed = writeStatus?.success === false;
 
-                    if (isEmpty || isPlaceholder) {
-                        if (cached && cached.trim()) {
-                            list.push({ anchorId, batchIndex: i + 1, content: cached });
+                    if (isEmpty || isPlaceholder || isFailureBlock || isStatusFailed) {
+                        // 只有当内存缓存存在且本身不是失败标记时，才允许尝试补写
+                        const isCachedValid = cached && cached.trim().length > 0 && 
+                            !cached.includes('[!danger]') && !cached.includes('分析失败');
+                        if (isCachedValid && !isStatusFailed) {
+                            list.push({ anchorId, batchIndex: i + 1, content: cached! });
                         } else {
-                            // 无缓存 = ASR 没成功或 LLM 从未写入（真失败），不能伪装成「本段无语音」，
-                            // 记为未修复，交给上层暂停并在错误详情里点名。
+                            // 真正的失败/缺失分块，必须记为未修复，交由上层暂停任务
+                            console.warn(`[兜底巡检] 批次 ${i + 1} 判定为失败/缺失分块 (empty=${isEmpty}, placeholder=${isPlaceholder}, failure=${isFailureBlock}, statusFailed=${isStatusFailed})`);
                             unrepaired.push(i + 1);
                         }
                     }
@@ -2519,35 +2662,69 @@ export default class TranscribePlugin extends Plugin {
      */
     private async pauseTranscriptionWithError(file: TFile, editor: Editor, targetLeaf: WorkspaceLeaf, totalChunks: number) {
         const failed = new Set<number>();
-        this.batchWriteStatus.forEach((s, idx) => { if (s.success === false) failed.add(idx + 1); });
+        const completed = new Set<number>();
+
         for (let i = 0; i < totalChunks; i++) {
-            if (!this.batchWriteStatus.has(i)) failed.add(i + 1);
+            const status = this.batchWriteStatus.get(i);
+            if (status && status.success === true) {
+                completed.add(i + 1);
+            } else {
+                failed.add(i + 1);
+            }
         }
 
         const errors = (this.currentTaskReport?.errorLog ?? []).slice(-20);
-        const failedList = [...failed].sort((a, b) => a - b).map(n => `第 ${n} 部分`).join('、') || '(未知)';
+        const failedList = [...failed].sort((a, b) => a - b).map(n => `第 ${n} 部分`).join('、') || '(无)';
+        const completedList = [...completed].sort((a, b) => a - b).map(n => `第 ${n} 部分`).join('、') || '(无)';
 
         const pauseBlock =
-            `\n\n> [!danger] ⏸️ 转写任务已暂停（${new Date().toLocaleString()}）\n` +
-            `> 视频：${file.basename}\n` +
-            `> 未完成 / 失败分块：${failedList}\n` +
+            `\n\n> [!danger] ⏸️ 智能转写已安全暂停（${new Date().toLocaleString()}）\n` +
+            `> **目标视频**：${file.basename}\n` +
+            `> **分块总览**：共 ${totalChunks} 个分块（已就绪: ${completedList} | 异常: ${failedList}）\n` +
             `> \n` +
-            `> 错误详情：\n` +
+            `> ### 📌 当前情况说明\n` +
+            `> 插件在分析上述异常分块时遭遇失败（已自动重试）。**为防止错误被后续步骤覆盖导致笔记永久丢失，插件已按设计安全暂停下来**。\n` +
+            `> \n` +
+            `> ### 🔍 异常与错误详情\n` +
             (errors.length
-                ? errors.map(l => `>   ${l}`).join('\n')
-                : `>   (无详细错误)`);
+                ? errors.map(l => `> - \`${l}\``).join('\n')
+                : `> - (暂未捕获到特定异常文本，请检查控制台 Console 输出)`) + `\n` +
+            `> \n` +
+            `> ### 🛠️ 如何排查与继续（恢复入口）\n` +
+            `> 1. **排查原因**：可联系 AI Agent 检查对应的 LLM 接口、网络连接、或者模型池的拒答拦截情况；\n` +
+            `> 2. **恢复执行**：问题处理好之后，**绝不需要从头重新跑**！\n` +
+            `>    请按下快捷键 \`Ctrl + P\` 打开命令面板，输入并执行：\n` +
+            `>    **\`SiliconFlow Transcriber: ▶️ 继续转写（断点续跑）\`**\n` +
+            `> 3. **智能续跑**：插件将直接从断点读取进度，自动保留已就绪的分块，仅对异常分块发起补全并自动完成全局校验。\n`;
 
-        // 💾 保存最终断点，确保最新进度落盘
-        if (this.currentCheckpoint) this.saveCheckpoint(this.currentCheckpoint);
+        // 💾 同步并保存最终断点，确保最新进度落盘
+        const cp = this.currentCheckpoint;
+        if (cp) {
+            if (!Array.isArray(cp.batches)) {
+                cp.batches = [];
+            }
+            for (let i = 0; i < totalChunks; i++) {
+                let b = cp.batches[i];
+                if (!b) {
+                    b = { done: false };
+                    cp.batches[i] = b;
+                }
+                b.done = completed.has(i + 1);
+            }
+            this.saveCheckpoint(cp);
+            console.log(`[暂停] 断点已持久化写盘: ${cp.videoPath}`);
+        }
 
         try {
-            const noteFile = (targetLeaf.view as any).file as TFile;
-            if (noteFile instanceof TFile) {
-                // 持锁 read-modify-write；并避免反复暂停时把同一个 danger 块堆叠多次
+            const view = targetLeaf.view;
+            const noteFile = (view && typeof view === 'object' && 'file' in view && view.file instanceof TFile)
+                ? view.file
+                : null;
+            if (noteFile) {
                 await this.withFileLock(async () => {
                     const current = await this.app.vault.read(noteFile);
-                    if (current.includes(`未完成 / 失败分块：${failedList}`)) {
-                        console.log('[暂停] 笔记中已存在相同的暂停说明，跳过重复写入');
+                    if (current.includes(`未完成 / 失败分块：${failedList}`) || current.includes(`异常: ${failedList}`)) {
+                        console.log('[暂停] 笔记中已存在暂停说明，跳过重复追加');
                         return;
                     }
                     await this.app.vault.modify(noteFile, current + pauseBlock);
@@ -2559,11 +2736,16 @@ export default class TranscribePlugin extends Plugin {
             console.error('[暂停] 写入暂停标记失败:', e);
         }
 
+        // 释放运行态锁，让用户排查后随时可以点击继续转写
+        this.isProcessing = false;
+        this.currentTranscribingNotePath = null;
+        this.activeAiCount = 0;
+
         new Notice(
-            `⏸️ 转写已暂停：${failedList} 失败。修复后执行「▶️ 继续转写（断点续跑）」即可从已完成进度继续，无需重做`,
+            `⏸️ 转写已暂停：${failedList} 分析失败！详情与恢复指引已写入笔记末尾。\n修复后在命令面板运行「▶️ 继续转写（断点续跑）」即可精准续跑。`,
             0
         );
-        console.error('[暂停] 致命错误，任务已暂停。失败分块:', failedList, '错误:', errors);
+        console.error('[暂停] 任务已主动暂停。失败分块:', failedList, '错误:', errors);
     }
 
     /**
@@ -2808,7 +2990,6 @@ export default class TranscribePlugin extends Plugin {
             let llmCursor = 0;
             let llmFailed = 0;
             let criticalError = false;
-            const MAX_LLM_FAILURES = 3;
 
             const llmWorker = async (): Promise<void> => {
                 while (true) {
@@ -2822,23 +3003,25 @@ export default class TranscribePlugin extends Plugin {
                             this.currentTaskReport.failedBatches++;
                             this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1}: ASR 转写失败`);
                         }
-                        llmFailed++;
-                        if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
-                        continue;
+                        criticalError = true;
+                        new Notice(`❌ [第 ${i + 1} 部分] ASR 转写失败，已暂停续跑`, 0);
+                        break;
                     }
                     try {
                         const result = await this.runBatchAnalysis(job, videoFile.name, editor, leaf, 0);
                         if (result === false) {
-                            llmFailed++;
                             if (this.currentTaskReport) this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1}: 分析失败`);
-                            if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
-                        } else {
-                            llmFailed = 0;
+                            criticalError = true;
+                            new Notice(`❌ [第 ${i + 1} 部分] 分析失败，已暂停任务以保护笔记完整性`, 0);
+                            break;
                         }
-                    } catch (e) {
+                    } catch (e: unknown) {
+                        const err = e as Error;
                         console.error(`续跑 批次 ${i + 1} 异常:`, e);
-                        llmFailed++;
-                        if (llmFailed >= MAX_LLM_FAILURES) { criticalError = true; new Notice(`❌ 续跑连续失败 ${MAX_LLM_FAILURES} 次，已暂停`, 8000); }
+                        if (this.currentTaskReport) this.currentTaskReport.errorLog.push(`续跑 批次 ${i + 1} 异常: ${err?.message || String(e)}`);
+                        criticalError = true;
+                        new Notice(`❌ [第 ${i + 1} 部分] 续跑异常: ${err?.message || String(e)}，已暂停任务`, 0);
+                        break;
                     }
                 }
             };
@@ -2846,14 +3029,14 @@ export default class TranscribePlugin extends Plugin {
             for (let w = 0; w < Math.min(maxConcurrent, toDo.length); w++) llmWorkers.push(llmWorker());
             await Promise.all(llmWorkers);
 
-            // ===== 阶段 C：兜底巡检 + 致命错误判定 =====
+            // ===== 阶段 C：兜底巡检 + 严格错误判定 =====
             const allSectionsOk = await this.ensureAllSectionsWritten(editor, leaf, totalChunks, videoFile.name);
-            // 同样只看巡检结果：有缺失才暂停，避免误暂停内容其实完整的笔记
-            if (!allSectionsOk) {
+            const hasAnyFailedStatus = Array.from(this.batchWriteStatus.values()).some(s => s.success === false);
+            if (!allSectionsOk || hasAnyFailedStatus || criticalError) {
+                console.error(`[续跑中断] 检测到失败或未完成分块 (allSectionsOk=${allSectionsOk}, hasAnyFailedStatus=${hasAnyFailedStatus}, criticalError=${criticalError})，坚决终止进入全局校验`);
                 await this.pauseTranscriptionWithError(videoFile, editor, leaf, totalChunks);
                 return;
             }
-
             // ===== 阶段 D：全局校验 + 思维导图 + 报告 =====
             new Notice(`✨ 分块续跑完毕，开始全局校验与修正`);
             await this.runGlobalCorrectionAnalysis(allBatchJobs, videoFile.name, editor, leaf, checkpoint.duration);

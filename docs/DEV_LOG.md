@@ -1,5 +1,42 @@
 # 开发日志
 
+## [2026-09-25 18:20:15] fix(link): 回退"右侧已显示即跳过"守卫——它让右键联动变成"什么都不发生"
+
+- **现象**：上一版上线后，右键播放画面无任何反应（不再切到智能笔记）；点击暂停不联动（符合预期）
+- **根因**：上一版在 `openNoteForMediaFile()` 里加了 `isNoteShownInRightSidebar()` 提前 return（"右侧已显示该笔记就不重复切换"），而真实使用场景恰恰是"笔记已经在右侧栏开着"：
+  - 实机证据（`.obsidian/workspace.json` 18:15 快照）：主区 ACTIVE = `Z_27数学/15.第13讲_多元函数与微分学/06.第13讲二、多元函数微分法则06.mp4`；右侧栏 markdown 标签 = 同目录智能笔记 `📝06.第13讲二、多元函数微分法则06.md` → 右键命中守卫直接 return
+  - 该守卫只判断笔记"开着"、不判断它是否为当前选中标签（右侧栏同组还挂着 outline / yolo-chat / 番茄钟等 5 个标签），语义本身也不完整
+- **旧逻辑为什么本来是对的**：`openNoteInRightSidebar` 精确匹配分支为 `setActiveLeaf(targetLeaf, {focus:true})`，而 Obsidian `setActiveLeaf` 内部对标签组执行 `selectTabIndex()`（app.js 证据）——已打开的笔记会被**激活并选中标签页**，并不会重复打开文件
+- **修改**：删除 `isNoteShownInRightSidebar()` 及提前 return，恢复"已打开 → 激活/聚焦（选中标签）"；openFile 触发层（patch）、右键、启动兜底均不变；代码注释与 README 标注"不要加这个提前 return"
+- **验证**：`npm run build`（tsc 零错误，`main.js 294.4kb`）；`node scripts/test_media_linkage_smoke.cjs` **23/23 通过**（用例 4/11 改为验证"不重复打开文件 + `setActiveLeaf(focus:true)` 激活已有笔记"）
+
+## [2026-09-25 17:45:57] fix(link): 修复"点击播放画面暂停仍会切换右侧内容"——触发层改为包装 openFile
+
+- **现象**：09-22 改造（file-open + 右键）上线后，点视频暂停/播放时右侧边栏仍会被切走（且焦点被抢回右侧），与"点击完全不触发"的目标不符
+- **根因（一手证据）**：Obsidian `app.js` 里 `file-open` 的真正发射点是 `activeLeafEvents()`——
+  `var t=this.lastActiveFile, n=this.getActiveFile(); t!==n && (this.recentFileTracker.onFileOpen(n,t), this.lastActiveFile=n, this.trigger("file-open", n))`
+  即 **`file-open` 的真实语义是"活动文件变化"**：点播放画面会把活动文件从侧栏笔记切回视频，于是又触发联动。上一轮离线冒烟用 stub 模拟"打开"，没覆盖这条路径
+- **修改**（仍只动触发层，`openNoteInRightSidebar` 逻辑零改动）：
+  - 移除 `workspace.on('file-open')` 订阅，改为包装 `WorkspaceLeaf.prototype.openFile`（`patchLeafOpenFile()`）：这是"打开文件"的唯一入口（资源管理器点开 / 链接跳转 / 拖拽 / 新窗口 / 其它插件调用；内部就是 `setViewState({type,state:{file}})`）；点击窗格 / 标签页只走 `setActiveLeaf`，不经过它
+  - 包装可叠加在其它插件（media-extended 也包装了 openFile）之上；卸载时仅当自己仍在外层才还原，不覆盖他人包装；打开失败（reject / 视图未换成目标文件）不联动
+  - 启动恢复兜底：恢复工作区走 `leaf.setViewState` 不经 openFile，新增 `onLayoutReady` 时若当前激活文件是媒体文件则补一次联动（`handleInitialMediaOpen()`）
+  - 防重复：新增 `isNoteShownInRightSidebar()`——右侧边栏已显示该笔记时直接返回，不再切换（避免无谓抢焦点）
+  - 播放画面右键触发（contextmenu capture）保持不变
+- **验证**：`npm run build`（tsc -noEmit 零错误 + esbuild 产物 `main.js 294.9kb`）；新增离线冒烟 `scripts/test_media_linkage_smoke.cjs`，`node scripts/test_media_linkage_smoke.cjs` **23/23 通过**——不再订阅 file-open / openFile 已包装 / 点击暂停不联动 / 打开视频联动 / 打开过程不抢焦点 / 右侧同笔记不重复切换 / 无笔记、md、侧边栏内打开均不联动 / reject 不外抛 / 启动兜底（视频→联动、笔记→不联动）/ 右键联动与防重复 / 卸载还原（在外层还原、不在外层不覆盖他人）
+- **待实机确认**：需在 Obsidian「设置 → 第三方插件」对本插件禁用再启用（main.js 不热重载）；确认点暂停不再切换、右键仍联动、打开视频仍联动
+
+## [2026-09-22 11:06:54] change(link): 主从视图联动触发方式由"激活窗格变化"改为「打开视频 / 播放画面右击」
+
+- **需求**：点视频只是想暂停时，右侧边栏也会被切成智能笔记（且 `openNoteInRightSidebar` 会 `setActiveLeaf(focus:true)` 把焦点抢回右侧），导致"点一下暂停就来回切换"。要求把"点击"触发改为"右击"
+- **逻辑澄清**：原实现并未绑定任何 click 监听，而是监听 `workspace.on('active-leaf-change')`（[`main.ts`](main.ts:423) 旧代码）——凡是"激活窗格发生变化"都会触发（含点击播放画面暂停、点标签页、点文件列表打开视频）；全项目（含编译产物 main.js）无 click/contextmenu 监听
+- **修改**（仅动触发层，`openNoteInRightSidebar` 及其单例复用/转写保护逻辑零改动）：
+  - 移除 `active-leaf-change` 订阅，改为 `file-open`（[`main.ts`](main.ts:424)）：只有文件被真正打开（文件列表点开 / 链接跳转 / 启动恢复工作区）才联动；点击播放画面暂停不再触发
+  - 新增播放画面**右击**联动：`registerDomEvent(document, 'contextmenu', …, { capture: true })`，capture 阶段（播放器自身若 stopPropagation 仍能收到），**不 preventDefault**（Obsidian 原生右键菜单照常）；另在 `window-open` 时给弹出窗口的 document 注册同样监听
+  - 命中判定：`target.closest('.view-content')`（= 播放画面本身，排除标签页 / 窗格头部 ⋯ 菜单区域）→ `View.containerEl.contains()` 反查所属 `WorkspaceLeaf` → 排除左右侧边栏 → 取 `view.file` 校验媒体扩展名
+  - 侧边栏保护：`isFileOpenOnlyInSidebars()`——只在侧边栏里打开（如"在右侧边栏打开"）不联动；同一文件同时也开在主区时仍联动；布局中找不到该文件时放行（避免 file-open 时序漏触发）
+- **实机环境核对**：视频由 Media Extended 打开（视图类型 `mx-file`，见 workspace.json）；其 `main.js` 中 `this.contentEl.addClasses(["mx","custom","mx-media-view","mx-file-media-view"])`、`styles.css` 中 `.mx-media-view.view-content` —— 即播放器根元素自带 `view-content` 类，且播放器在 shadow root 内（contextmenu 为 composed 事件，会冒泡/重定向到宿主，仍落在 `.view-content` 内）
+- **验证**：`npx tsc -noEmit` 零错误；`npm run build` 成功（`main.js 292.2kb`）；离线冒烟（stub obsidian/electron 直接加载构建产物 `main.js`）19/19 通过——注册项（有 file-open/window-open + capture contextmenu、无 active-leaf-change）、真·打开视频→切换、打开笔记/无笔记视频/null→不切换、主区+侧边栏同开→仍切换、只开侧边栏→不切换、画面上右击→切换、播放器容器右击→切换、笔记内嵌视频右击→不切换、窗格头部右击→不切换、侧边栏视频右击→不切换、非元素目标→不报错
+
 ## [2026-09-22 00:20:00] fix(mindmap): 修复时间戳塌陷成 00:00 导致链接失效 + 思维导图请求缺 max_tokens 截断
 
 - **现象**：8 篇新笔记的 BATCH_0 全部章节时间戳变成 `00:00`（覆盖了原有正确内容）；对应 rich 导图中该批链接**全部指向同一标题**（用户反馈"链接无法指向对应位置"）；另有多张导图末尾章节缺失
