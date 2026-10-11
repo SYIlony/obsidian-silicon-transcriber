@@ -66,6 +66,7 @@ import {
     generatePartialMindmapContent,
     MindmapBranchMigrateModal,
     TargetMindmapPickerModal,
+    RegenerateMindmapModal,
     parseAndAnalyzeRichMindmap,
     migrateMindmapGroups,
     isMindmapFile
@@ -3095,7 +3096,7 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 生成思维导图
      */
-    async generateMindMap(videoFile: TFile) {
+    async generateMindMap(videoFile: TFile, customRequirements?: string, explicitNoteFile?: TFile) {
         try {
             if (this.allChapterSummaries.length === 0) {
                 console.warn("没有章节数据，跳过思维导图生成");
@@ -3104,10 +3105,24 @@ export default class TranscribePlugin extends Plugin {
 
             const prepareNotice = new Notice("🧠 [阶段1/4] 准备章节数据...", 0);
 
-            // 修复根目录路径问题
-            const videoDir = videoFile.parent?.path === '/' ? '' : videoFile.parent?.path || '';
-            const { notePath } = calculateNotePaths(videoDir, videoFile.basename);
-            const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+            let noteFile: TFile | null = explicitNoteFile || null;
+            let videoDir: string;
+            let videoBasename: string;
+
+            if (noteFile) {
+                videoBasename = noteFile.basename.replace(/^📝/, '');
+                let mapDir = noteFile.parent?.path === '/' ? '' : noteFile.parent?.path || '';
+                if (noteFile.parent && noteFile.parent.name.includes('智能笔记') && noteFile.parent.parent) {
+                    mapDir = noteFile.parent.parent.path === '/' ? '' : noteFile.parent.parent.path;
+                }
+                videoDir = mapDir;
+            } else {
+                videoDir = videoFile.parent?.path === '/' ? '' : videoFile.parent?.path || '';
+                videoBasename = videoFile.basename;
+                const { notePath } = calculateNotePaths(videoDir, videoFile.basename);
+                const found = this.app.vault.getAbstractFileByPath(notePath);
+                if (found instanceof TFile) noteFile = found;
+            }
 
             if (!(noteFile instanceof TFile)) {
                 prepareNotice.hide();
@@ -3124,7 +3139,7 @@ export default class TranscribePlugin extends Plugin {
             let finalContent: string = '';
             
             try {
-                const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app);
+                const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app, customRequirements);
                 mindmapSuccess = true;
                 
                 // 添加 MarkMind 识别头，配置节点间距更宽松
@@ -3610,24 +3625,23 @@ markmap:
     /**
      * 从现有笔记重新生成思维导图
      */
-    async regenerateMindmapFromNote() {
+    async regenerateMindmapFromNote(customRequirements?: string, skipModal = false) {
          const activeLeaf = this.app.workspace.activeLeaf;
          if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
              new Notice("❌ 请打开智能笔记文件");
              return;
          }
 
-         const noteFile = (activeLeaf.view as any).file as TFile;
+         const noteFile = viewFileOf(activeLeaf.view);
          if (!noteFile) return;
 
          try {
              const content = await this.app.vault.read(noteFile);
              
-             // 尝试查找原始视频文件
-             const videoFile = await this.findVideoFileFromNote(noteFile, content);
+             // 查找关联视频（找不到时平滑降级使用笔记文件本身推断目录，不阻断思维导图生成）
+             let videoFile = await this.findVideoFileFromNote(noteFile, content);
              if (!videoFile) {
-                 new Notice("❌ 无法找到关联的视频文件，请确保笔记头部包含视频链接或位于正确目录", 5000);
-                 return;
+                 videoFile = noteFile;
              }
              
              const chapters = this.parseChaptersFromNote(content);
@@ -3638,12 +3652,22 @@ markmap:
              
              this.allChapterSummaries = chapters;
              
-             new Notice(`🧠 识别到 ${chapters.length} 个章节，开始生成思维导图（含自动 Rich 转换）...`);
-             await this.generateMindMap(videoFile);
+             if (skipModal) {
+                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（含新要求）...`);
+                 await this.generateMindMap(videoFile, customRequirements, noteFile);
+                 return;
+             }
+
+             // 打开带新要求输入框的重生成模态框
+             new RegenerateMindmapModal(this.app, noteFile, chapters.length, async (req) => {
+                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（含自动 Rich 转换）...`);
+                 await this.generateMindMap(videoFile, req, noteFile);
+             }).open();
              
-         } catch (e) {
+         } catch (e: unknown) {
              console.error(e);
-             new Notice(`❌ 错误: ${e.message}`);
+             const errorMsg = e instanceof Error ? e.message : String(e);
+             new Notice(`❌ 错误: ${errorMsg}`);
          }
     }
 
@@ -3886,7 +3910,37 @@ markmap:
         generateContent: generateMindmapContent,
         generatePartialContent: generatePartialMindmapContent,
         isMindmapFile: (file: TFile, content?: string) => isMindmapFile(this.app, file, content),
+        regenerateMindmap: async (noteFile: TFile, customRequirements?: string) => {
+            const content = await this.app.vault.read(noteFile);
+            let videoFile = await this.findVideoFileFromNote(noteFile, content);
+            if (!videoFile) videoFile = noteFile;
+            const chapters = this.parseChaptersFromNote(content);
+            if (chapters.length === 0) throw new Error("笔记中未找到有效章节标记");
+            this.allChapterSummaries = chapters;
+            await this.generateMindMap(videoFile, customRequirements, noteFile);
+            return { success: true, chapterCount: chapters.length };
+        },
+        openRegenerateModal: async (noteFile?: TFile) => {
+            let target = noteFile;
+            if (!target) {
+                const active = this.app.workspace.getActiveFile();
+                if (active && active.extension === 'md') target = active;
+            }
+            if (!target) {
+                new Notice("❌ 请先打开或指定智能笔记文件");
+                return;
+            }
+            const content = await this.app.vault.read(target);
+            const chapters = this.parseChaptersFromNote(content);
+            let videoFile = await this.findVideoFileFromNote(target, content);
+            if (!videoFile) videoFile = target;
+            this.allChapterSummaries = chapters;
+            new RegenerateMindmapModal(this.app, target, chapters.length, async (req) => {
+                await this.generateMindMap(videoFile, req, target);
+            }).open();
+        },
         TargetMindmapPickerModal,
         MindmapBranchMigrateModal,
+        RegenerateMindmapModal,
     };
 }

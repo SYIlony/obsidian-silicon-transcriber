@@ -595,3 +595,20 @@
 
 4. **实测保障**:
    - 编写 `scripts/test_renamed_mindmap_in_app.mjs`，通过 Electron CDP 在运行中的 Obsidian 内对真实已改名导图 `05.谓语动词时态下.md`（79节点）进行真实打开运行实测，场景 A（打开即运行）与场景 B（全库检索 317 个导图）100% 通过。
+
+## [2026-10-12 11:30:00] feat(mindmap-regenerate): 重生成思维导图增加自定义新要求弹窗与 AI 可编程重生成接口
+
+1. **需求背景**:
+   - 用户不仅需要在已有导图上追加新要求分支，而且在运行“🧠 重生成思维导图”全量命令时，也需要能随时输入新的自定义要求（如“重点突出核心定理技巧与易错点”、“精简说明文字只留框架”等）重绘全图。
+   - 需对外引出可编程 AI 接口，使外部 Agent/对话直接携带自定义指令触发全图重生成。
+
+2. **功能与架构实现**:
+   - 新增 `RegenerateMindmapModal` 弹窗（`src/mindmap-migrate-modal.ts`），展示当前笔记路径、已识别章节数，并提供多行自定义要求输入框（留空按默认生成，填入则最高优先级遵循）。
+   - 增强 `generateMindMap` 与 `regenerateMindmapFromNote` 方法，全面兼容视频文件移位/脱机场景（自动基于智能笔记推断导图输出路径，不再因视频未找到而阻断导图生成）。
+   - 在 `plugin.mindmapAPI` 统一暴露出：
+     - `regenerateMindmap(noteFile, customRequirements)`: 纯代码/AI 异步调用接口，不弹窗直接执行。
+     - `openRegenerateModal(noteFile)`: 交互弹窗调用接口。
+     - `RegenerateMindmapModal`: 模态框类。
+
+3. **应用内实测 (CDP)**:
+   - 在运行中的 Obsidian 内对真实智能笔记 `📝01 写作功能句1-5.md` 进行实测，验证弹窗成功打开、章节统计准确（18个章节）、新要求多行输入框渲染及取值正常，API 挂载健全。

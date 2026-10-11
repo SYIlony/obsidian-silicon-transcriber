@@ -4439,6 +4439,82 @@ var MindmapBranchMigrateModal = class extends import_obsidian6.Modal {
     document.head.appendChild(style);
   }
 };
+var RegenerateMindmapModal = class extends import_obsidian6.Modal {
+  constructor(app, noteFile, chapterCount, onConfirm) {
+    super(app);
+    this.noteFile = noteFile;
+    this.chapterCount = chapterCount;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("regenerate-mindmap-modal");
+    this.injectStyles();
+    contentEl.createEl("h2", { text: "\u{1F9E0} \u91CD\u65B0\u751F\u6210\u601D\u7EF4\u5BFC\u56FE" });
+    contentEl.createEl("div", {
+      cls: "rmm-note-path",
+      text: `\u7B14\u8BB0\uFF1A${this.noteFile.path}`
+    });
+    const infoBox = contentEl.createDiv({ cls: "rmm-box" });
+    infoBox.createEl("div", {
+      cls: "rmm-box-title",
+      text: `\u{1F4CA} \u5DF2\u8BC6\u522B\u5230 ${this.chapterCount} \u4E2A\u7AE0\u8282\u8981\u70B9`
+    });
+    infoBox.createEl("div", {
+      cls: "rmm-box-desc",
+      text: "\u91CD\u65B0\u751F\u6210\u5C06\u4F7F\u7528\u5B8C\u6574\u7684\u7B14\u8BB0\u7AE0\u8282\u6570\u636E\uFF0C\u8986\u76D6\u73B0\u6709\u7684\u601D\u7EF4\u5BFC\u56FE\u5E76\u81EA\u52A8\u8F6C\u6362\u4E3A Rich \u683C\u5F0F\u3002"
+    });
+    const reqBox = contentEl.createDiv({ cls: "rmm-box" });
+    reqBox.createEl("div", {
+      cls: "rmm-box-title",
+      text: "\u{1F4A1} \u589E\u6DFB\u7684\u65B0\u8981\u6C42\uFF08\u53EF\u9009\uFF09"
+    });
+    reqBox.createEl("div", {
+      cls: "rmm-box-desc",
+      text: "\u586B\u5165\u4F60\u7684\u4E2A\u6027\u5316\u65B0\u6307\u4EE4\uFF0CAI \u5C06\u5728\u5168\u56FE\u751F\u6210\u4E2D\u4E25\u683C\u9075\u5FAA\uFF08\u7559\u7A7A\u5219\u6309\u9ED8\u8BA4\u903B\u8F91\u751F\u6210\uFF09\uFF1A"
+    });
+    this.customReqInput = reqBox.createEl("textarea", {
+      cls: "rmm-custom-req",
+      attr: {
+        placeholder: "\u4F8B\u5982\uFF1A\u91CD\u70B9\u7A81\u51FA\u6838\u5FC3\u5B9A\u7406\u7684\u89E3\u9898\u6280\u5DE7\u4E0E\u6613\u9519\u70B9\u3001\u516C\u5F0F\u8865\u5145\u51E0\u4F55\u610F\u4E49\u3001\u7CBE\u7B80\u6982\u5FF5\u5C55\u5F00\u53EA\u7559\u6838\u5FC3\u6846\u67B6\u2026",
+        rows: "4"
+      }
+    });
+    const footer = contentEl.createDiv({ cls: "rmm-footer" });
+    const btnBox = footer.createDiv({ cls: "rmm-footer-btns" });
+    const cancelBtn = btnBox.createEl("button", { text: "\u53D6\u6D88" });
+    cancelBtn.onclick = () => this.close();
+    const confirmBtn = btnBox.createEl("button", {
+      cls: "mod-cta",
+      text: "\u{1F680} \u5F00\u59CB\u91CD\u65B0\u751F\u6210"
+    });
+    confirmBtn.onclick = () => {
+      var _a, _b;
+      const req = ((_b = (_a = this.customReqInput) == null ? void 0 : _a.value) == null ? void 0 : _b.trim()) || void 0;
+      this.close();
+      this.onConfirm(req);
+    };
+  }
+  injectStyles() {
+    const id = "silicon-transcriber-regenerate-modal-styles";
+    if (document.getElementById(id))
+      return;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = `
+            .regenerate-mindmap-modal { max-width: 540px; padding: 12px 16px; }
+            .rmm-note-path { color: var(--text-muted); font-size: 12px; margin-bottom: 12px; word-break: break-all; }
+            .rmm-box { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; background: var(--background-secondary); }
+            .rmm-box-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+            .rmm-box-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+            .rmm-custom-req { width: 100%; resize: vertical; min-height: 80px; font-size: 13px; padding: 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+            .rmm-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+            .rmm-footer-btns { display: flex; gap: 8px; }
+        `;
+    document.head.appendChild(style);
+  }
+};
 
 // main.ts
 function viewFileOf(view) {
@@ -4500,8 +4576,42 @@ var TranscribePlugin = class extends import_obsidian7.Plugin {
       generateContent: generateMindmapContent,
       generatePartialContent: generatePartialMindmapContent,
       isMindmapFile: (file, content) => isMindmapFile(this.app, file, content),
+      regenerateMindmap: async (noteFile, customRequirements) => {
+        const content = await this.app.vault.read(noteFile);
+        let videoFile = await this.findVideoFileFromNote(noteFile, content);
+        if (!videoFile)
+          videoFile = noteFile;
+        const chapters = this.parseChaptersFromNote(content);
+        if (chapters.length === 0)
+          throw new Error("\u7B14\u8BB0\u4E2D\u672A\u627E\u5230\u6709\u6548\u7AE0\u8282\u6807\u8BB0");
+        this.allChapterSummaries = chapters;
+        await this.generateMindMap(videoFile, customRequirements, noteFile);
+        return { success: true, chapterCount: chapters.length };
+      },
+      openRegenerateModal: async (noteFile) => {
+        let target = noteFile;
+        if (!target) {
+          const active = this.app.workspace.getActiveFile();
+          if (active && active.extension === "md")
+            target = active;
+        }
+        if (!target) {
+          new import_obsidian7.Notice("\u274C \u8BF7\u5148\u6253\u5F00\u6216\u6307\u5B9A\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6");
+          return;
+        }
+        const content = await this.app.vault.read(target);
+        const chapters = this.parseChaptersFromNote(content);
+        let videoFile = await this.findVideoFileFromNote(target, content);
+        if (!videoFile)
+          videoFile = target;
+        this.allChapterSummaries = chapters;
+        new RegenerateMindmapModal(this.app, target, chapters.length, async (req) => {
+          await this.generateMindMap(videoFile, req, target);
+        }).open();
+      },
       TargetMindmapPickerModal,
-      MindmapBranchMigrateModal
+      MindmapBranchMigrateModal,
+      RegenerateMindmapModal
     };
   }
   /**
@@ -6919,17 +7029,32 @@ ${endMarker}`;
   /**
    * 生成思维导图
    */
-  async generateMindMap(videoFile) {
-    var _a, _b;
+  async generateMindMap(videoFile, customRequirements, explicitNoteFile) {
+    var _a, _b, _c, _d;
     try {
       if (this.allChapterSummaries.length === 0) {
         console.warn("\u6CA1\u6709\u7AE0\u8282\u6570\u636E\uFF0C\u8DF3\u8FC7\u601D\u7EF4\u5BFC\u56FE\u751F\u6210");
         return;
       }
       const prepareNotice = new import_obsidian7.Notice("\u{1F9E0} [\u9636\u6BB51/4] \u51C6\u5907\u7AE0\u8282\u6570\u636E...", 0);
-      const videoDir = ((_a = videoFile.parent) == null ? void 0 : _a.path) === "/" ? "" : ((_b = videoFile.parent) == null ? void 0 : _b.path) || "";
-      const { notePath } = calculateNotePaths(videoDir, videoFile.basename);
-      const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+      let noteFile = explicitNoteFile || null;
+      let videoDir;
+      let videoBasename;
+      if (noteFile) {
+        videoBasename = noteFile.basename.replace(/^📝/, "");
+        let mapDir = ((_a = noteFile.parent) == null ? void 0 : _a.path) === "/" ? "" : ((_b = noteFile.parent) == null ? void 0 : _b.path) || "";
+        if (noteFile.parent && noteFile.parent.name.includes("\u667A\u80FD\u7B14\u8BB0") && noteFile.parent.parent) {
+          mapDir = noteFile.parent.parent.path === "/" ? "" : noteFile.parent.parent.path;
+        }
+        videoDir = mapDir;
+      } else {
+        videoDir = ((_c = videoFile.parent) == null ? void 0 : _c.path) === "/" ? "" : ((_d = videoFile.parent) == null ? void 0 : _d.path) || "";
+        videoBasename = videoFile.basename;
+        const { notePath } = calculateNotePaths(videoDir, videoFile.basename);
+        const found = this.app.vault.getAbstractFileByPath(notePath);
+        if (found instanceof import_obsidian7.TFile)
+          noteFile = found;
+      }
       if (!(noteFile instanceof import_obsidian7.TFile)) {
         prepareNotice.hide();
         new import_obsidian7.Notice("\u26A0\uFE0F \u65E0\u6CD5\u627E\u5230\u7B14\u8BB0\u6587\u4EF6\uFF0C\u8DF3\u8FC7\u601D\u7EF4\u5BFC\u56FE\u751F\u6210\u3002");
@@ -6941,7 +7066,7 @@ ${endMarker}`;
       let mindmapError;
       let finalContent = "";
       try {
-        const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app);
+        const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app, customRequirements);
         mindmapSuccess = true;
         const yamlHeader = `---
 mindmap-plugin: basic
@@ -7336,21 +7461,20 @@ markmap:
   /**
    * 从现有笔记重新生成思维导图
    */
-  async regenerateMindmapFromNote() {
+  async regenerateMindmapFromNote(customRequirements, skipModal = false) {
     const activeLeaf = this.app.workspace.activeLeaf;
     if (!activeLeaf || activeLeaf.view.getViewType() !== "markdown") {
       new import_obsidian7.Notice("\u274C \u8BF7\u6253\u5F00\u667A\u80FD\u7B14\u8BB0\u6587\u4EF6");
       return;
     }
-    const noteFile = activeLeaf.view.file;
+    const noteFile = viewFileOf(activeLeaf.view);
     if (!noteFile)
       return;
     try {
       const content = await this.app.vault.read(noteFile);
-      const videoFile = await this.findVideoFileFromNote(noteFile, content);
+      let videoFile = await this.findVideoFileFromNote(noteFile, content);
       if (!videoFile) {
-        new import_obsidian7.Notice("\u274C \u65E0\u6CD5\u627E\u5230\u5173\u8054\u7684\u89C6\u9891\u6587\u4EF6\uFF0C\u8BF7\u786E\u4FDD\u7B14\u8BB0\u5934\u90E8\u5305\u542B\u89C6\u9891\u94FE\u63A5\u6216\u4F4D\u4E8E\u6B63\u786E\u76EE\u5F55", 5e3);
-        return;
+        videoFile = noteFile;
       }
       const chapters = this.parseChaptersFromNote(content);
       if (chapters.length === 0) {
@@ -7358,11 +7482,19 @@ markmap:
         return;
       }
       this.allChapterSummaries = chapters;
-      new import_obsidian7.Notice(`\u{1F9E0} \u8BC6\u522B\u5230 ${chapters.length} \u4E2A\u7AE0\u8282\uFF0C\u5F00\u59CB\u751F\u6210\u601D\u7EF4\u5BFC\u56FE\uFF08\u542B\u81EA\u52A8 Rich \u8F6C\u6362\uFF09...`);
-      await this.generateMindMap(videoFile);
+      if (skipModal) {
+        new import_obsidian7.Notice(`\u{1F9E0} \u8BC6\u522B\u5230 ${chapters.length} \u4E2A\u7AE0\u8282\uFF0C\u5F00\u59CB\u91CD\u65B0\u751F\u6210\u601D\u7EF4\u5BFC\u56FE\uFF08\u542B\u65B0\u8981\u6C42\uFF09...`);
+        await this.generateMindMap(videoFile, customRequirements, noteFile);
+        return;
+      }
+      new RegenerateMindmapModal(this.app, noteFile, chapters.length, async (req) => {
+        new import_obsidian7.Notice(`\u{1F9E0} \u8BC6\u522B\u5230 ${chapters.length} \u4E2A\u7AE0\u8282\uFF0C\u5F00\u59CB\u91CD\u65B0\u751F\u6210\u601D\u7EF4\u5BFC\u56FE\uFF08\u542B\u81EA\u52A8 Rich \u8F6C\u6362\uFF09...`);
+        await this.generateMindMap(videoFile, req, noteFile);
+      }).open();
     } catch (e) {
       console.error(e);
-      new import_obsidian7.Notice(`\u274C \u9519\u8BEF: ${e.message}`);
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      new import_obsidian7.Notice(`\u274C \u9519\u8BEF: ${errorMsg}`);
     }
   }
   /**

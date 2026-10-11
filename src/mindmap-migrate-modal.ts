@@ -491,3 +491,99 @@ export class MindmapBranchMigrateModal extends Modal {
         document.head.appendChild(style);
     }
 }
+
+/**
+ * 重新生成思维导图弹窗（支持增添自定义新要求）
+ */
+export class RegenerateMindmapModal extends Modal {
+    private noteFile: TFile;
+    private chapterCount: number;
+    private onConfirm: (customRequirements?: string) => void;
+    private customReqInput?: HTMLTextAreaElement;
+
+    constructor(
+        app: App,
+        noteFile: TFile,
+        chapterCount: number,
+        onConfirm: (customRequirements?: string) => void
+    ) {
+        super(app);
+        this.noteFile = noteFile;
+        this.chapterCount = chapterCount;
+        this.onConfirm = onConfirm;
+    }
+
+    onOpen(): void {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('regenerate-mindmap-modal');
+        this.injectStyles();
+
+        contentEl.createEl('h2', { text: '🧠 重新生成思维导图' });
+        contentEl.createEl('div', {
+            cls: 'rmm-note-path',
+            text: `笔记：${this.noteFile.path}`
+        });
+
+        const infoBox = contentEl.createDiv({ cls: 'rmm-box' });
+        infoBox.createEl('div', {
+            cls: 'rmm-box-title',
+            text: `📊 已识别到 ${this.chapterCount} 个章节要点`
+        });
+        infoBox.createEl('div', {
+            cls: 'rmm-box-desc',
+            text: '重新生成将使用完整的笔记章节数据，覆盖现有的思维导图并自动转换为 Rich 格式。'
+        });
+
+        const reqBox = contentEl.createDiv({ cls: 'rmm-box' });
+        reqBox.createEl('div', {
+            cls: 'rmm-box-title',
+            text: '💡 增添的新要求（可选）'
+        });
+        reqBox.createEl('div', {
+            cls: 'rmm-box-desc',
+            text: '填入你的个性化新指令，AI 将在全图生成中严格遵循（留空则按默认逻辑生成）：'
+        });
+
+        this.customReqInput = reqBox.createEl('textarea', {
+            cls: 'rmm-custom-req',
+            attr: {
+                placeholder: '例如：重点突出核心定理的解题技巧与易错点、公式补充几何意义、精简概念展开只留核心框架…',
+                rows: '4'
+            }
+        });
+
+        const footer = contentEl.createDiv({ cls: 'rmm-footer' });
+        const btnBox = footer.createDiv({ cls: 'rmm-footer-btns' });
+        const cancelBtn = btnBox.createEl('button', { text: '取消' });
+        cancelBtn.onclick = () => this.close();
+
+        const confirmBtn = btnBox.createEl('button', {
+            cls: 'mod-cta',
+            text: '🚀 开始重新生成'
+        });
+        confirmBtn.onclick = () => {
+            const req = this.customReqInput?.value?.trim() || undefined;
+            this.close();
+            this.onConfirm(req);
+        };
+    }
+
+    private injectStyles(): void {
+        const id = 'silicon-transcriber-regenerate-modal-styles';
+        if (document.getElementById(id)) return;
+        const style = document.createElement('style');
+        style.id = id;
+        style.textContent = `
+            .regenerate-mindmap-modal { max-width: 540px; padding: 12px 16px; }
+            .rmm-note-path { color: var(--text-muted); font-size: 12px; margin-bottom: 12px; word-break: break-all; }
+            .rmm-box { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; background: var(--background-secondary); }
+            .rmm-box-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+            .rmm-box-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+            .rmm-custom-req { width: 100%; resize: vertical; min-height: 80px; font-size: 13px; padding: 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+            .rmm-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+            .rmm-footer-btns { display: flex; gap: 8px; }
+        `;
+        document.head.appendChild(style);
+    }
+}
