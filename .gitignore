@@ -7,3 +7,4 @@ repair-missing.log
 .fix-tasks/
 .backup-timestamp-fix-20260921/
 checkpoints/
+data.json
