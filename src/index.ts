@@ -29,3 +29,9 @@ export * from './batch-modal';
 
 // 局部思维导图（分块选择 + 追加到已有导图）
 export * from './partial-mindmap';
+
+// 🧠 Rich 思维导图组装、分类与跨图迁移引擎
+export * from './rich-mindmap-manager';
+
+// 🔀 思维导图分支组装与迁移模态框
+export * from './mindmap-migrate-modal';

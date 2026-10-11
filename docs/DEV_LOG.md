@@ -548,3 +548,32 @@
 - 修复 `src/llm.ts` 中四处硬编码（`getBatchSummary`、`getBatchSummaryInternal`、`getGlobalCorrectionSummary`、`generateMindmapContent`）
 - 将 OpenCode 专属参数 `reasoning_effort` 和 `thinking` 移至 `EXTRA_BODY` 配置
 - 修复日志字符串硬编码问题，现显示真实 provider 名称
+
+## [2026-10-11 15:30:00] feat(mindmap): Rich 思维导图分支拆分组装迁移引擎与自定义要求迭代生成
+
+1. **核心拓扑分析引擎与全覆盖分组 (src/rich-mindmap-manager.ts)**:
+   - 自动识别主根节点 (Root) 与所有第一层次级节点 (Secondary Branches)
+   - 递归深度优先遍历提取完整子树集合，连带样式、颜色与展开状态
+   - 闭包提取所有不在次级节点下的独立游离节点 (Orphan Nodes)，形成独立分支组
+   - 严格拓扑守恒校验：`1(root) + sum(groups.nodeCount) === totalNodeCount`，确保 100% 不漏不拿
+
+2. **跨思维导图原子合并与几何坐标排版**:
+   - MarkMind 8-4-4 十六进制 ID 全局防冲突重映射表
+   - 元数据关联对象 (induceData 概要框、wireFrameData 外框、relateLinkData 连线) 完整继承转换
+   - 2D 树形自适应排版算法：自动扫描目标导图同侧最低点 $Y_{\max}$，叶子节点 $34\text{px}$ 步进，父节点自动居中，水平层级深度 $170\text{px}$ 递增，绝对杜绝坐标重叠
+   - 调色板颜色顺延循环，风格统一优雅
+   - 支持两套模式：`copy` (复制追加，保留源导图) 与 `move` (剪切迁移，源导图清理对应子树)
+
+3. **交互弹窗与命令系统 (src/mindmap-migrate-modal.ts & main.ts)**:
+   - 新增命令：`🔀 组装与迁移思维导图分支 (MarkMind)` (`migrate-rich-mindmap-branches`)
+   - 文件管理器右键菜单与活动页面一键触发
+   - 可视化弹窗清晰展示分支统计、节点数量、全库目标思维导图搜索选择器与模式切换
+
+4. **自定义要求增量思维导图生成 (src/llm.ts & src/partial-mindmap.ts)**:
+   - 全量及局部思维导图生成方法支持 `customRequirements` 参数
+   - `PartialMindmapModal` 弹窗新增「③ 增添的新要求」多行输入框，动态将用户新指令注入到提示词最高优先级部分
+   - 插件类实例暴露统一 `mindmapAPI` (含 `parseAndAnalyze`, `migrateGroups`, `generateContent`, `generatePartialContent`)，供外部与后续 AI 对话直接调用
+
+5. **实测与质量保证**:
+   - 新建 `scripts/test_rich_mindmap_migration_smoke.cjs` 针对库内真实导图进行 6 大项严苛端到端与边界测试，全部 100% 通过
+   - TypeScript 严格类型检查，彻底消除 `any` 类型声明，esbuild 构建打包产物 `main.js` 333.7KB

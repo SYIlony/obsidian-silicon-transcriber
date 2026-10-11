@@ -1481,7 +1481,8 @@ function pickBestTitleMatch(candidates: ChapterSummary[], displayTitle: string):
 export async function generateMindmapContent(
     chapters: ChapterSummary[],
     noteFile: TFile,
-    app: App
+    app: App,
+    customRequirements?: string
 ): Promise<string> {
     // 从笔记文件名中提取视频名（去掉 "📝" 前缀）
     const videoName = noteFile.basename.replace(/^📝/, '');
@@ -1546,8 +1547,8 @@ ${chapters.map(c => {
     : c.summary;
   return `[${c.timestamp}] ${c.title}\n${detail}`;
 }).join('\n\n')}
+${customRequirements && customRequirements.trim() ? `\n## 💡 用户增添的特别生成要求（最高优先级，严格遵循）\n${customRequirements.trim()}\n` : ''}
 `;
-
     const raw = await requestMindmapLLMText(prompt, '思维导图');
 
     // 🛡️ content_filter 或空数据 → 降级构建简化版思维导图
@@ -1575,7 +1576,8 @@ export async function generatePartialMindmapContent(
     chapters: ChapterSummary[],
     noteFile: TFile,
     existingOutline: string,
-    chunkLabel: string
+    chunkLabel: string,
+    customRequirements?: string
 ): Promise<string> {
     const videoName = noteFile.basename.replace(/^📝/, '');
     const encodedNotePath = encodeURIComponent(noteFile.path);
@@ -1611,8 +1613,8 @@ ${chapters.map(c => {
 ### [04:42] 例题10.5
 - 定义域陷阱
   - $\\sqrt{\\sin x}$ 要求 $\\sin x \\ge 0$
+${customRequirements && customRequirements.trim() ? `\n## 💡 用户增添的特别生成要求（最高优先级，严格遵循）\n${customRequirements.trim()}\n` : ''}
 `;
-
     const raw = await requestMindmapLLMText(prompt, '局部思维导图');
     if (raw.hadContentFilter) {
         throw new Error('内容被模型 content_filter 拦截，请调整所选分块后重试');

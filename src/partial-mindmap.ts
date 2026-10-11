@@ -526,6 +526,7 @@ export class MindmapTargetPickerModal extends FuzzySuggestModal<TFile> {
 export interface PartialMindmapSelection {
     chunkIndexes: number[];
     target: TFile;
+    customRequirements?: string;
 }
 
 export interface PartialMindmapModalOptions {
@@ -545,7 +546,7 @@ export class PartialMindmapModal extends Modal {
     private targetLabelEl!: HTMLElement;
     private confirmBtn!: HTMLButtonElement;
     private countEl!: HTMLElement;
-
+    private customReqTextarea?: HTMLTextAreaElement;
     constructor(app: App, options: PartialMindmapModalOptions, onChoice: (value: PartialMindmapSelection | null) => void) {
         super(app);
         this.options = options;
@@ -630,6 +631,17 @@ export class PartialMindmapModal extends Modal {
             this.refreshCount();
         };
 
+        /* ── 增添的新要求 ── */
+        const reqBox = contentEl.createDiv({ cls: 'pmm-box' });
+        reqBox.createEl('div', { cls: 'pmm-box-title', text: '③ 增添的新要求（可选：满足新要求而继续生成导图）' });
+        this.customReqTextarea = reqBox.createEl('textarea', {
+            cls: 'pmm-custom-req',
+            attr: {
+                placeholder: '例如：重点展开例题解题思路与陷阱、每个概念补充几何意义、精简定理证明只留结论公式…',
+                rows: '3'
+            }
+        });
+
         /* ── 底部按钮 ── */
         const footer = contentEl.createDiv({ cls: 'pmm-footer' });
         this.countEl = footer.createEl('span', { cls: 'pmm-count' });
@@ -642,8 +654,9 @@ export class PartialMindmapModal extends Modal {
             this.settled = true;
             const chunkIndexes = Array.from(this.selectedIndexes).sort((a, b) => a - b);
             const target = this.target;
+            const customRequirements = this.customReqTextarea?.value?.trim() || undefined;
             this.close();
-            this.onChoice({ chunkIndexes, target });
+            this.onChoice({ chunkIndexes, target, customRequirements });
         };
 
         this.refreshCount();
@@ -693,6 +706,7 @@ export class PartialMindmapModal extends Modal {
             .partial-mindmap-modal .pmm-footer { display: flex; justify-content: space-between; align-items: center; }
             .partial-mindmap-modal .pmm-count { color: var(--text-muted); font-size: 12px; }
             .partial-mindmap-modal .pmm-footer-btns { display: flex; gap: 8px; }
+            .partial-mindmap-modal .pmm-custom-req { width: 100%; resize: vertical; min-height: 54px; font-size: 13px; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
         `;
         document.head.appendChild(style);
     }

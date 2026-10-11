@@ -63,7 +63,11 @@ import {
     openPartialMindmapModal,
     NoteChunk,
     PartialMindmapSelection,
-    generatePartialMindmapContent
+    generatePartialMindmapContent,
+    MindmapBranchMigrateModal,
+    TargetMindmapPickerModal,
+    parseAndAnalyzeRichMindmap,
+    migrateMindmapGroups
 } from './src';
 
 /**
@@ -488,6 +492,30 @@ export default class TranscribePlugin extends Plugin {
                 await this.resumeFromCheckpoint();
             }
         });
+
+        // 🔀 注册"思维导图分支组装与迁移"命令
+        this.addCommand({
+            id: 'migrate-rich-mindmap-branches',
+            name: '🔀 组装与迁移思维导图分支 (MarkMind)',
+            callback: async () => {
+                await this.openMindmapBranchMigrateModal();
+            }
+        });
+
+        // 🔀 在文件管理器右键菜单中增加入口
+        this.registerEvent(
+            this.app.workspace.on('file-menu', (menu, file) => {
+                if (file instanceof TFile && file.extension === 'md' && (file.basename.includes('🧠') || file.name.endsWith('-rich.md'))) {
+                    menu.addItem((item) => {
+                        item.setTitle('🔀 组装与迁移思维导图分支...')
+                            .setIcon('git-fork')
+                            .onClick(() => {
+                                new MindmapBranchMigrateModal(this.app, file).open();
+                            });
+                    });
+                }
+            })
+        );
     }
 
     /**
@@ -3693,7 +3721,7 @@ markmap:
             const existingOutline = format === 'rich'
                 ? extractRichOutline(targetText)
                 : extractBasicOutline(targetText);
-            branchMarkdown = await generatePartialMindmapContent(chapters, noteFile, existingOutline, chunkLabel);
+            branchMarkdown = await generatePartialMindmapContent(chapters, noteFile, existingOutline, chunkLabel, selection.customRequirements);
         } catch (e) {
             progress.hide();
             console.error('[局部思维导图] 生成失败:', e);
@@ -3810,4 +3838,38 @@ markmap:
     parseChaptersFromNote(content: string): ChapterSummary[] {
         return parseChaptersFromMarkdown(content);
     }
+
+    /**
+     * 🔀 打开思维导图分支组装与迁移弹窗
+     */
+    async openMindmapBranchMigrateModal(file?: TFile): Promise<void> {
+        let targetFile = file;
+        if (!targetFile) {
+            const activeFile = this.app.workspace.getActiveFile();
+            if (activeFile && (activeFile.basename.includes('🧠') || activeFile.name.endsWith('-rich.md'))) {
+                targetFile = activeFile;
+            }
+        }
+
+        if (targetFile) {
+            new MindmapBranchMigrateModal(this.app, targetFile).open();
+            return;
+        }
+
+        // 若当前未处于思维导图，弹出选择器让用户先选择源导图
+        new TargetMindmapPickerModal(this.app, null, (chosen) => {
+            new MindmapBranchMigrateModal(this.app, chosen).open();
+        }).open();
+    }
+
+    /**
+     * 🤖 导出的思维导图编程与 AI 操作 API 接口
+     * 供外部脚本、自动化流程或后续 AI 对话直接调用
+     */
+    public mindmapAPI = {
+        parseAndAnalyze: parseAndAnalyzeRichMindmap,
+        migrateGroups: migrateMindmapGroups,
+        generateContent: generateMindmapContent,
+        generatePartialContent: generatePartialMindmapContent,
+    };
 }
