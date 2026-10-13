@@ -46,6 +46,7 @@ import {
     getBatchSummary,
     getGlobalCorrectionSummary,
     generateMindmapContent,
+    resolveTextbookReference,
     generateTaskReport,
     TaskReportData,
     // 批量转写模态框
@@ -3643,7 +3644,7 @@ markmap:
     /**
      * 从现有笔记重新生成思维导图
      */
-    async regenerateMindmapFromNote(customRequirements?: string, skipModal = false, mode: TranscribeMode = 'standard') {
+    async regenerateMindmapFromNote(customRequirements?: string, skipModal = false, mode?: TranscribeMode) {
          const activeLeaf = this.app.workspace.activeLeaf;
          if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
              new Notice("❌ 请打开智能笔记文件");
@@ -3669,20 +3670,21 @@ markmap:
              }
              
              this.allChapterSummaries = chapters;
+             const hasTextbookRef = Boolean(resolveTextbookReference(noteFile.path, this.app));
+             const defaultMode: TranscribeMode = mode || (hasTextbookRef || noteFile.path.includes('_强化36讲') ? 'exam_points' : 'standard');
              
              if (skipModal) {
-                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（${mode === 'exam_points' ? '🎯二轮考点模式' : '常规模式'}）...`);
-                 await this.generateMindMap(videoFile, customRequirements, noteFile, mode);
+                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（${defaultMode === 'exam_points' ? '🎯二轮考点模式' : '常规模式'}）...`);
+                 await this.generateMindMap(videoFile, customRequirements, noteFile, defaultMode);
                  return;
              }
 
              // 打开带新要求输入框与导图模式切换的重生成模态框
              new RegenerateMindmapModal(this.app, noteFile, chapters.length, async (req, chosenMode) => {
-                 const finalMode = chosenMode || mode;
+                 const finalMode = chosenMode || defaultMode;
                  new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（${finalMode === 'exam_points' ? '🎯二轮考点模式' : '常规模式'}，含自动 Rich 转换）...`);
                  await this.generateMindMap(videoFile, req, noteFile, finalMode);
-             }, mode).open();
-             
+             }, defaultMode).open();
          } catch (e: unknown) {
              console.error(e);
              const errorMsg = e instanceof Error ? e.message : String(e);
