@@ -1687,7 +1687,7 @@ export default class TranscribePlugin extends Plugin {
                         setTimeout(() => reject(new Error(`全局校验 Promise.race 超时 (${GLOBAL_TIMEOUT_MS}ms)`)), GLOBAL_TIMEOUT_MS)
                     );
                     const result = await Promise.race([
-                        getGlobalCorrectionSummary(preliminarySummaries, mode),
+                        getGlobalCorrectionSummary(preliminarySummaries, mode, fileName),
                         timeoutPromise
                     ]);
                     topics = result.chapters;
@@ -2062,7 +2062,7 @@ export default class TranscribePlugin extends Plugin {
                   }
                   
                   // 调用 AI，始终使用 OpenCode DeepSeek V4 Pro (idx=0)
-                  const aiResult = await getBatchSummary(rawText, this.historySummaries, startTime, providerIdx, true, this.currentTranscribeMode);
+                  const aiResult = await getBatchSummary(rawText, this.historySummaries, startTime, providerIdx, true, this.currentTranscribeMode, fileName);
                   topics = aiResult.chapters;
                   currentLeftover = aiResult.leftover;
                   callSuccess = true;
