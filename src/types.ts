@@ -5,6 +5,13 @@
 
 import { Editor, WorkspaceLeaf } from 'obsidian';
 
+
+/**
+ * 转写模式：
+ * - 'standard': 常规全量转写（保留知识点、定义推导与例题具体演算过程）
+ * - 'exam_points': 二轮考点转写（数学强化专用：纯考点+题型破题技巧+一行母题特征，剔除例题具体演算过程）
+ */
+export type TranscribeMode = 'standard' | 'exam_points';
 /**
  * ASR 返回的单个句段
  */

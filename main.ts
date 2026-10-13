@@ -16,6 +16,7 @@ import {
     BatchJob,
     ChapterSummary,
     NoteMetaData,
+    TranscribeMode,
     // 配置
     updateConfigs,
     updateConfigsFromSettings,
@@ -78,6 +79,7 @@ import {
 interface TranscribeTask {
     videoFile: TFile;
     noteFile: TFile;
+    mode?: TranscribeMode;
 }
 
 /**
@@ -138,6 +140,7 @@ interface TranscribeCheckpoint {
     historySummaries: string;              // 已累积的跨批次历史摘要
     allChapterSummaries: ChapterSummary[]; // 已生成的章节摘要（供思维导图/全局校验）
     batches: Array<{ done: boolean; segments?: Segment[]; content?: string } | null>;
+    mode?: TranscribeMode;
 }
 
 /** 读取文件视图（Markdown / MarkMind 等）关联的文件 */
@@ -185,6 +188,8 @@ export default class TranscribePlugin extends Plugin {
 
     /** 当前正在转写的笔记文件路径（用于侧边栏保护） */
     private currentTranscribingNotePath: string | null = null;
+    /** 当前转写任务模式（常规全量 vs 二轮考点） */
+    private currentTranscribeMode: TranscribeMode = 'standard';
     /** 锚点状态缓存（用于写入失败恢复） */
     private anchorStateCache: Map<string, { content: string; timestamp: number }> = new Map();
     /** 批次写入状态跟踪 */
@@ -459,6 +464,15 @@ export default class TranscribePlugin extends Plugin {
             }
         });
 
+        // 🎯 注册"二轮考点转写（数学强化）"命令
+        this.addCommand({
+            id: 'transcribe-exam-points-mode',
+            name: '🎯 二轮考点转写（数学强化：纯考点+题型技巧，无例题过程）',
+            callback: async () => {
+                await this.handleTranscribeCommand('exam_points');
+            }
+        });
+
         // 🧠 注册"重生成思维导图"命令 (从现有笔记)
         this.addCommand({
             id: 'regenerate-mindmap-from-note',
@@ -523,20 +537,19 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 打开批量转写选择窗口
      */
-    private async openBatchTranscribeModal() {
-        const modal = new BatchTranscribeModal(this.app, async (files) => {
-            await this.queueBatchTranscription(files);
-        });
+    private async openBatchTranscribeModal(initialMode: TranscribeMode = 'standard') {
+        const modal = new BatchTranscribeModal(this.app, async (files, mode) => {
+            await this.queueBatchTranscription(files, mode);
+        }, initialMode);
         modal.open();
     }
 
     /**
      * 将选中的多个文件加入转写队列
      */
-    private async queueBatchTranscription(videoFiles: TFile[]) {
+    private async queueBatchTranscription(videoFiles: TFile[], mode: TranscribeMode = 'standard') {
         let added = 0;
         let skipped = 0;
-
         for (const videoFile of videoFiles) {
             const videoDir = videoFile.parent?.path === '/' ? '' : videoFile.parent?.path || '';
             const { noteFolder, notePath } = calculateNotePaths(videoDir, videoFile.basename);
@@ -593,12 +606,13 @@ export default class TranscribePlugin extends Plugin {
                 continue;
             }
 
-            this.transcriptionQueue.push({ videoFile, noteFile: noteFile as TFile });
+            this.transcriptionQueue.push({ videoFile, noteFile: noteFile as TFile, mode });
             added++;
         }
 
         if (added > 0) {
-            new Notice(`✅ 已添加 ${added} 个文件到转写队列${skipped > 0 ? `（跳过 ${skipped} 个）` : ''}`, 3000);
+            const modeTag = mode === 'exam_points' ? ' [🎯二轮考点模式]' : '';
+            new Notice(`✅ 已添加 ${added} 个文件到转写队列${modeTag}${skipped > 0 ? `（跳过 ${skipped} 个）` : ''}`, 3000);
             if (!this.isProcessing) {
                 this.processQueue();
             } else {
@@ -1075,7 +1089,7 @@ export default class TranscribePlugin extends Plugin {
             // 再次确认 leaf 存活且是 MarkdownView
             if (targetLeaf && targetLeaf.view instanceof MarkdownView) {
                 // 执行转写
-                await this.processTranscription(task.videoFile, targetLeaf.view.editor, targetLeaf);
+                await this.processTranscription(task.videoFile, targetLeaf.view.editor, targetLeaf, task.mode || 'standard');
             } else {
                 new Notice(`❌ 无法打开笔记文件: ${task.noteFile.basename}，跳过此任务`);
             }
@@ -1098,7 +1112,7 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 处理"智能转写"命令
      */
-    private async handleTranscribeCommand() {
+    private async handleTranscribeCommand(mode: TranscribeMode = 'standard') {
         const activeLeaf = this.app.workspace.activeLeaf;
         if (!activeLeaf) return;
 
@@ -1176,13 +1190,14 @@ export default class TranscribePlugin extends Plugin {
             }
 
             // 2. 加入队列
-            this.transcriptionQueue.push({ videoFile, noteFile });
+            this.transcriptionQueue.push({ videoFile, noteFile, mode });
+            const modeLabel = mode === 'exam_points' ? ' [🎯二轮考点模式]' : '';
             
             // 3. 尝试启动队列
             if (!this.isProcessing) {
                 this.processQueue();
             } else {
-                new Notice(`📋 已添加到队列: ${videoFile.basename}（当前转写完成后自动开始）`, 3000);
+                new Notice(`📋 已添加到队列${modeLabel}: ${videoFile.basename}（当前转写完成后自动开始）`, 3000);
                 this.updateQueueStatus();
             }
         } else {
@@ -1195,7 +1210,8 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 主处理流程：转写 + AI 分析 + 思维导图
      */
-    async processTranscription(file: TFile, editor: Editor, targetLeaf: WorkspaceLeaf) {
+    async processTranscription(file: TFile, editor: Editor, targetLeaf: WorkspaceLeaf, mode: TranscribeMode = 'standard') {
+        this.currentTranscribeMode = mode;
         const adapter = this.app.vault.adapter;
         if (!(adapter instanceof FileSystemAdapter)) {
             new Notice("非桌面环境不可用");
@@ -1346,7 +1362,8 @@ export default class TranscribePlugin extends Plugin {
                 duration,
                 historySummaries: '',
                 allChapterSummaries: [],
-                batches: new Array(totalChunks).fill(null).map(() => ({ done: false }))
+                batches: new Array(totalChunks).fill(null).map(() => ({ done: false })),
+                mode
             };
             this.saveCheckpoint(this.currentCheckpoint);
 
@@ -1574,7 +1591,7 @@ export default class TranscribePlugin extends Plugin {
 
             // 全部批次分析完毕后，进行整体审查与修正
             new Notice(`✨ 分块分析完毕，开始全局校验与修正`);
-            await this.runGlobalCorrectionAnalysis(allBatchJobs, file.name, editor, targetLeaf, duration);
+            await this.runGlobalCorrectionAnalysis(allBatchJobs, file.name, editor, targetLeaf, duration, mode);
             this.currentTaskReport.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
 
             // 🎉 完成通知
@@ -1588,7 +1605,7 @@ export default class TranscribePlugin extends Plugin {
             }
 
             // 🧠 生成思维导图
-            await this.generateMindMap(file);
+            await this.generateMindMap(file, undefined, undefined, mode);
             this.currentTaskReport.mindmapSuccess = true;
 
             // 📋 生成任务完成报告（直接写入文件，避免 editor 问题）
@@ -1615,7 +1632,7 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 运行全局的最终检查与修正
      */
-    async runGlobalCorrectionAnalysis(jobs: BatchJob[], fileName: string, editor: Editor, targetLeaf: WorkspaceLeaf, totalDuration: number) {
+    async runGlobalCorrectionAnalysis(jobs: BatchJob[], fileName: string, editor: Editor, targetLeaf: WorkspaceLeaf, totalDuration: number, mode: TranscribeMode = this.currentTranscribeMode) {
         if (jobs.length === 0) return;
 
         const notice = new Notice(`⏳ 正在准备全局校验数据...`, 0);
@@ -1670,7 +1687,7 @@ export default class TranscribePlugin extends Plugin {
                         setTimeout(() => reject(new Error(`全局校验 Promise.race 超时 (${GLOBAL_TIMEOUT_MS}ms)`)), GLOBAL_TIMEOUT_MS)
                     );
                     const result = await Promise.race([
-                        getGlobalCorrectionSummary(preliminarySummaries),
+                        getGlobalCorrectionSummary(preliminarySummaries, mode),
                         timeoutPromise
                     ]);
                     topics = result.chapters;
@@ -2045,7 +2062,7 @@ export default class TranscribePlugin extends Plugin {
                   }
                   
                   // 调用 AI，始终使用 OpenCode DeepSeek V4 Pro (idx=0)
-                  const aiResult = await getBatchSummary(rawText, this.historySummaries, startTime, providerIdx, true);
+                  const aiResult = await getBatchSummary(rawText, this.historySummaries, startTime, providerIdx, true, this.currentTranscribeMode);
                   topics = aiResult.chapters;
                   currentLeftover = aiResult.leftover;
                   callSuccess = true;
@@ -2888,6 +2905,7 @@ export default class TranscribePlugin extends Plugin {
 
         try {
             const totalChunks = checkpoint.totalChunks;
+            this.currentTranscribeMode = checkpoint.mode || 'standard';
             const inputPath = path.join(adapter.getBasePath(), videoFile.path);
             const allBatchJobs: BatchJob[] = new Array(totalChunks);
             this.allBatchJobsRef = allBatchJobs;
@@ -3069,11 +3087,11 @@ export default class TranscribePlugin extends Plugin {
             }
             // ===== 阶段 D：全局校验 + 思维导图 + 报告 =====
             new Notice(`✨ 分块续跑完毕，开始全局校验与修正`);
-            await this.runGlobalCorrectionAnalysis(allBatchJobs, videoFile.name, editor, leaf, checkpoint.duration);
+            await this.runGlobalCorrectionAnalysis(allBatchJobs, videoFile.name, editor, leaf, checkpoint.duration, this.currentTranscribeMode);
             this.currentTaskReport!.globalAnalysisSuccess = this.allChapterSummaries.length > 0;
 
             new Notice('🎉 断点续跑完成！', 0);
-            await this.generateMindMap(videoFile);
+            await this.generateMindMap(videoFile, undefined, undefined, this.currentTranscribeMode);
             this.currentTaskReport!.mindmapSuccess = true;
 
             if (noteFile instanceof TFile) {
@@ -3096,7 +3114,7 @@ export default class TranscribePlugin extends Plugin {
     /**
      * 生成思维导图
      */
-    async generateMindMap(videoFile: TFile, customRequirements?: string, explicitNoteFile?: TFile) {
+    async generateMindMap(videoFile: TFile, customRequirements?: string, explicitNoteFile?: TFile, mode: TranscribeMode = this.currentTranscribeMode) {
         try {
             if (this.allChapterSummaries.length === 0) {
                 console.warn("没有章节数据，跳过思维导图生成");
@@ -3139,7 +3157,7 @@ export default class TranscribePlugin extends Plugin {
             let finalContent: string = '';
             
             try {
-                const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app, customRequirements);
+                const content = await generateMindmapContent(this.allChapterSummaries, noteFile, this.app, customRequirements, mode);
                 mindmapSuccess = true;
                 
                 // 添加 MarkMind 识别头，配置节点间距更宽松
@@ -3625,7 +3643,7 @@ markmap:
     /**
      * 从现有笔记重新生成思维导图
      */
-    async regenerateMindmapFromNote(customRequirements?: string, skipModal = false) {
+    async regenerateMindmapFromNote(customRequirements?: string, skipModal = false, mode: TranscribeMode = 'standard') {
          const activeLeaf = this.app.workspace.activeLeaf;
          if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
              new Notice("❌ 请打开智能笔记文件");
@@ -3653,16 +3671,17 @@ markmap:
              this.allChapterSummaries = chapters;
              
              if (skipModal) {
-                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（含新要求）...`);
-                 await this.generateMindMap(videoFile, customRequirements, noteFile);
+                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（${mode === 'exam_points' ? '🎯二轮考点模式' : '常规模式'}）...`);
+                 await this.generateMindMap(videoFile, customRequirements, noteFile, mode);
                  return;
              }
 
-             // 打开带新要求输入框的重生成模态框
-             new RegenerateMindmapModal(this.app, noteFile, chapters.length, async (req) => {
-                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（含自动 Rich 转换）...`);
-                 await this.generateMindMap(videoFile, req, noteFile);
-             }).open();
+             // 打开带新要求输入框与导图模式切换的重生成模态框
+             new RegenerateMindmapModal(this.app, noteFile, chapters.length, async (req, chosenMode) => {
+                 const finalMode = chosenMode || mode;
+                 new Notice(`🧠 识别到 ${chapters.length} 个章节，开始重新生成思维导图（${finalMode === 'exam_points' ? '🎯二轮考点模式' : '常规模式'}，含自动 Rich 转换）...`);
+                 await this.generateMindMap(videoFile, req, noteFile, finalMode);
+             }, mode).open();
              
          } catch (e: unknown) {
              console.error(e);
@@ -3746,7 +3765,7 @@ markmap:
             const existingOutline = format === 'rich'
                 ? extractRichOutline(targetText)
                 : extractBasicOutline(targetText);
-            branchMarkdown = await generatePartialMindmapContent(chapters, noteFile, existingOutline, chunkLabel, selection.customRequirements);
+            branchMarkdown = await generatePartialMindmapContent(chapters, noteFile, existingOutline, chunkLabel, selection.customRequirements, selection.mode || 'standard');
         } catch (e) {
             progress.hide();
             console.error('[局部思维导图] 生成失败:', e);
@@ -3910,17 +3929,17 @@ markmap:
         generateContent: generateMindmapContent,
         generatePartialContent: generatePartialMindmapContent,
         isMindmapFile: (file: TFile, content?: string) => isMindmapFile(this.app, file, content),
-        regenerateMindmap: async (noteFile: TFile, customRequirements?: string) => {
+        regenerateMindmap: async (noteFile: TFile, customRequirements?: string, mode: TranscribeMode = 'standard') => {
             const content = await this.app.vault.read(noteFile);
             let videoFile = await this.findVideoFileFromNote(noteFile, content);
             if (!videoFile) videoFile = noteFile;
             const chapters = this.parseChaptersFromNote(content);
             if (chapters.length === 0) throw new Error("笔记中未找到有效章节标记");
             this.allChapterSummaries = chapters;
-            await this.generateMindMap(videoFile, customRequirements, noteFile);
-            return { success: true, chapterCount: chapters.length };
+            await this.generateMindMap(videoFile, customRequirements, noteFile, mode);
+            return { success: true, chapterCount: chapters.length, mode };
         },
-        openRegenerateModal: async (noteFile?: TFile) => {
+        openRegenerateModal: async (noteFile?: TFile, defaultMode: TranscribeMode = 'standard') => {
             let target = noteFile;
             if (!target) {
                 const active = this.app.workspace.getActiveFile();
@@ -3935,9 +3954,9 @@ markmap:
             let videoFile = await this.findVideoFileFromNote(target, content);
             if (!videoFile) videoFile = target;
             this.allChapterSummaries = chapters;
-            new RegenerateMindmapModal(this.app, target, chapters.length, async (req) => {
-                await this.generateMindMap(videoFile, req, target);
-            }).open();
+            new RegenerateMindmapModal(this.app, target, chapters.length, async (req, chosenMode) => {
+                await this.generateMindMap(videoFile, req, target, chosenMode || defaultMode);
+            }, defaultMode).open();
         },
         TargetMindmapPickerModal,
         MindmapBranchMigrateModal,

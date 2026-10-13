@@ -10,6 +10,7 @@
  */
 
 import { App, FuzzySuggestModal, Modal, Notice, Setting, TFile } from 'obsidian';
+import { TranscribeMode } from './types';
 import {
     parseAndAnalyzeRichMindmap,
     migrateMindmapGroups,
@@ -498,19 +499,22 @@ export class MindmapBranchMigrateModal extends Modal {
 export class RegenerateMindmapModal extends Modal {
     private noteFile: TFile;
     private chapterCount: number;
-    private onConfirm: (customRequirements?: string) => void;
+    private onConfirm: (customRequirements?: string, mode?: TranscribeMode) => void;
     private customReqInput?: HTMLTextAreaElement;
+    private selectedMode: TranscribeMode;
 
     constructor(
         app: App,
         noteFile: TFile,
         chapterCount: number,
-        onConfirm: (customRequirements?: string) => void
+        onConfirm: (customRequirements?: string, mode?: TranscribeMode) => void,
+        defaultMode: TranscribeMode = 'standard'
     ) {
         super(app);
         this.noteFile = noteFile;
         this.chapterCount = chapterCount;
         this.onConfirm = onConfirm;
+        this.selectedMode = defaultMode;
     }
 
     onOpen(): void {
@@ -534,6 +538,39 @@ export class RegenerateMindmapModal extends Modal {
             cls: 'rmm-box-desc',
             text: '重新生成将使用完整的笔记章节数据，覆盖现有的思维导图并自动转换为 Rich 格式。'
         });
+
+        const modeBox = contentEl.createDiv({ cls: 'rmm-box' });
+        modeBox.createEl('div', {
+            cls: 'rmm-box-title',
+            text: '🎯 导图构建模式'
+        });
+        const modeBtnRow = modeBox.createDiv({ cls: 'rmm-mode-btns' });
+        const btnStd = modeBtnRow.createEl('button', {
+            text: '📝 常规知识框架模式',
+            cls: `rmm-mode-btn ${this.selectedMode === 'standard' ? 'is-active' : ''}`
+        });
+        const btnExam = modeBtnRow.createEl('button', {
+            text: '🎯 二轮纯考点与题型技巧模式（剔除例题过程）',
+            cls: `rmm-mode-btn ${this.selectedMode === 'exam_points' ? 'is-active' : ''}`
+        });
+        const modeHint = modeBox.createEl('div', {
+            cls: 'rmm-box-desc',
+            text: this.selectedMode === 'exam_points'
+                ? '已选【二轮考点模式】：自动清洗掉笔记中的例题具体计算步骤，纯按「考点定理 ➔ 破题信号 ➔ 解题大招/一行母题特征 ➔ 避坑指南」构建导图。'
+                : '已选【常规模式】：完整保留笔记中的各章节知识结构与例题节点。'
+        });
+        btnStd.onclick = () => {
+            this.selectedMode = 'standard';
+            btnStd.addClass('is-active');
+            btnExam.removeClass('is-active');
+            modeHint.setText('已选【常规模式】：完整保留笔记中的各章节知识结构与例题节点。');
+        };
+        btnExam.onclick = () => {
+            this.selectedMode = 'exam_points';
+            btnExam.addClass('is-active');
+            btnStd.removeClass('is-active');
+            modeHint.setText('已选【二轮考点模式】：自动清洗掉笔记中的例题具体计算步骤，纯按「考点定理 ➔ 破题信号 ➔ 解题大招/一行母题特征 ➔ 避坑指南」构建导图。');
+        };
 
         const reqBox = contentEl.createDiv({ cls: 'rmm-box' });
         reqBox.createEl('div', {
@@ -565,7 +602,7 @@ export class RegenerateMindmapModal extends Modal {
         confirmBtn.onclick = () => {
             const req = this.customReqInput?.value?.trim() || undefined;
             this.close();
-            this.onConfirm(req);
+            this.onConfirm(req, this.selectedMode);
         };
     }
 
@@ -581,6 +618,9 @@ export class RegenerateMindmapModal extends Modal {
             .rmm-box-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
             .rmm-box-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
             .rmm-custom-req { width: 100%; resize: vertical; min-height: 80px; font-size: 13px; padding: 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+            .rmm-mode-btns { display: flex; gap: 8px; margin: 6px 0 8px 0; flex-wrap: wrap; }
+            .rmm-mode-btn { cursor: pointer; font-size: 12px; padding: 5px 10px; border-radius: 5px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+            .rmm-mode-btn.is-active { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); font-weight: 600; }
             .rmm-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
             .rmm-footer-btns { display: flex; gap: 8px; }
         `;

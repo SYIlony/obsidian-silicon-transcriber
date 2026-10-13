@@ -8,7 +8,7 @@
  */
 
 import { App, FuzzySuggestModal, Modal, TFile, TFolder } from 'obsidian';
-import { ChapterSummary } from './types';
+import { ChapterSummary, TranscribeMode } from './types';
 
 /* ==================== 分块解析 ==================== */
 
@@ -527,6 +527,7 @@ export interface PartialMindmapSelection {
     chunkIndexes: number[];
     target: TFile;
     customRequirements?: string;
+    mode?: TranscribeMode;
 }
 
 export interface PartialMindmapModalOptions {
@@ -547,6 +548,7 @@ export class PartialMindmapModal extends Modal {
     private confirmBtn!: HTMLButtonElement;
     private countEl!: HTMLElement;
     private customReqTextarea?: HTMLTextAreaElement;
+    private selectedMode: TranscribeMode = 'standard';
     constructor(app: App, options: PartialMindmapModalOptions, onChoice: (value: PartialMindmapSelection | null) => void) {
         super(app);
         this.options = options;
@@ -642,6 +644,19 @@ export class PartialMindmapModal extends Modal {
             }
         });
 
+        /* ── 导图提炼风格 ── */
+        const modeRow = reqBox.createDiv({ cls: 'pmm-mode-row' });
+        const modeCheck = modeRow.createEl('input', { type: 'checkbox' });
+        modeCheck.checked = this.selectedMode === 'exam_points';
+        const modeLabel = modeRow.createEl('label', {
+            cls: 'pmm-chunk-label',
+            text: '🎯 启用「二轮纯考点与题型技巧模式」（自动剔除例题具体演算步骤，只提炼考点、破题信号与大招）'
+        });
+        modeCheck.onchange = () => {
+            this.selectedMode = modeCheck.checked ? 'exam_points' : 'standard';
+        };
+        modeLabel.onclick = () => { modeCheck.click(); };
+
         /* ── 底部按钮 ── */
         const footer = contentEl.createDiv({ cls: 'pmm-footer' });
         this.countEl = footer.createEl('span', { cls: 'pmm-count' });
@@ -655,8 +670,9 @@ export class PartialMindmapModal extends Modal {
             const chunkIndexes = Array.from(this.selectedIndexes).sort((a, b) => a - b);
             const target = this.target;
             const customRequirements = this.customReqTextarea?.value?.trim() || undefined;
+            const mode = this.selectedMode;
             this.close();
-            this.onChoice({ chunkIndexes, target, customRequirements });
+            this.onChoice({ chunkIndexes, target, customRequirements, mode });
         };
 
         this.refreshCount();
@@ -707,6 +723,7 @@ export class PartialMindmapModal extends Modal {
             .partial-mindmap-modal .pmm-count { color: var(--text-muted); font-size: 12px; }
             .partial-mindmap-modal .pmm-footer-btns { display: flex; gap: 8px; }
             .partial-mindmap-modal .pmm-custom-req { width: 100%; resize: vertical; min-height: 54px; font-size: 13px; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+            .partial-mindmap-modal .pmm-mode-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--background-modifier-border); }
         `;
         document.head.appendChild(style);
     }

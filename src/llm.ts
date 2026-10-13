@@ -6,7 +6,7 @@
 import { App, Notice, TFile } from 'obsidian';
 import { requestDirect } from './http-direct';
 import { LLM_CONFIG, LLM_GLOBAL_CONFIG, LLM_MINDMAP_CONFIG, LLM_REPORT_CONFIG, LLM_REPORT_FALLBACK, LLMProvider, LLM_PROVIDERS } from './config';
-import { ChapterSummary, NoteMetaData, ExampleItem, GlobalCorrectionResult } from './types';
+import { ChapterSummary, NoteMetaData, ExampleItem, GlobalCorrectionResult, TranscribeMode } from './types';
 import { formatTime, parseTime } from './utils';
 import { LatexProtect } from './latex-protect';
 
@@ -899,13 +899,14 @@ export async function getBatchSummary(
   history: string,
   batchStartTime: number,
   providerIndex?: number,
-  trySiliconFlow?: boolean
+  trySiliconFlow?: boolean,
+  mode: TranscribeMode = 'standard'
 ): Promise<BatchSummaryResult> {
   // 使用传入的 providerIndex（缺省为 0），不再硬编码 OpenCode
   const idx = (typeof providerIndex === 'number' && providerIndex >= 0 && providerIndex < LLM_PROVIDERS.length) ? providerIndex : 0;
   const selectedProvider = LLM_PROVIDERS[idx];
-  console.log(`🔑 使用 ${selectedProvider.NAME} (model=${selectedProvider.MODEL})`);
-  return await getBatchSummaryInternal(currentRaw, history, batchStartTime, idx, false);
+  console.log(`🔑 使用 ${selectedProvider.NAME} (model=${selectedProvider.MODEL}, mode=${mode})`);
+  return await getBatchSummaryInternal(currentRaw, history, batchStartTime, idx, false, mode);
 }
 
 /**
@@ -916,11 +917,54 @@ async function getBatchSummaryInternal(
   history: string,
   batchStartTime: number,
   providerIndex: number,
-  fallbackToSecond: boolean = true
+  fallbackToSecond: boolean = true,
+  mode: TranscribeMode = 'standard'
 ): Promise<BatchSummaryResult> {
     const batchStartStr = formatTime(batchStartTime);
+    const isExamPoints = mode === 'exam_points';
     
-    const prompt = `
+    const prompt = isExamPoints ? `
+目标：对考研数学强化课转写文本进行**【二轮考点与题型方法论】专项提炼**，为后续构建“纯考点与解题技巧思维导图”提供高纯度结构化素材。
+输入：这是一段数学强化课堂录音转写的片段（从约 ${batchStartStr} 开始）。输入中每行形如 [时间] 正文。
+输出：使用以下标记格式输出（不要输出 JSON，不要使用反引号或代码块）。
+
+${history ? `前情提要参考：\n${history.slice(-2000)}\n---` : ""}
+
+**核心要求（二轮考点模式 · 极重要）：**
+1. **彻底剔除例题具体演算过程**：当老师在黑板上一步步演算某道具体例题（如代入具体数字、通分、求导化简、算最终得数）时，**绝对不要记录具体算题步骤和流水账**！禁止输出诸如“第一步通分得到…第二步求导得到…最终答案为 -1/2”之类的具体题目演算过程。
+2. **纯抓【考点体系 + 题型破题信号 + 老师独门技巧/大招】**：
+   - **核心考点与定理结论**：完整保留定义、充要条件、适用范围、标准公式、隐含结论体系（如七种未定式整体与局部判定、变限积分无穷小阶比较、带头大哥同号性、保号性脱帽戴帽法等）。
+   - **题型分类与破题信号**：重点提炼老师强调的“**见到什么特征/结构 ➔ 立即锁定什么方法/恒等变形**”（例如：见到有界振荡项 $(-1)^n, \\sin n$ ➔ 乘除单位元 $\\frac{n}{n}$ 构造 $1^\\infty$ 型并利用无穷小×有界消除振荡；见到复杂加减法极限 ➔ 先识别并剥离非零干扰项）。
+   - **一行母题特征（点到为止）**：若某个重要题型技巧是由老师讲解的一道典型例题引出的，仅允许用**一行话**概括【典型母题特征】（例如：\`- **典型母题特征**：形如 $\\lim [\\frac{1}{x} - \\frac{\\int_0^x \\sin t/t dt}{x\\ln(1+x)}]$ 含变限积分的 $\\infty-\\infty$ 型，先拆出极限为 $1$ 的干扰项，切忌直接暴力通分\`），**绝不展开具体计算过程**。
+   - **易错点与避坑指南**：重点记录老师口头强调的适用禁忌、常见失分陷阱（如等价替换条件、洛必达失效场景、开区间有界性三段论不可逆等）。
+3. **章节命名去例题化**：每个 \`===SEGMENT===\` 的 \`title\` 必须命名为**具体的考点名、题型名或解题方法/技巧名**（如“干扰项提取策略与变限积分化简”、“有界振荡项的单位元构造法”），**严禁把标题起名为“例题1.1”、“例题讲解”、“综合计算演示”**！如果某段完全是在算上一知识点的配套例题，请将其提炼出的通用技巧合并到对应考点块中。
+4. **专业术语静默纠偏**：输入源于语音识别，请结合数学逻辑静默修正同音错字（特别注意：张宇老师的“**三向解题法**”切勿写成“三项解题法”；准确使用“海涅定理”、“施笃兹公式(Stolz)”、“拉格朗日中值定理”、“泰勒公式”、“皮亚诺余项”、“带头大哥”、“脱帽法/戴帽法”、“移花接木”等标准术语）。
+5. **处理截断**：如果末尾内容被截断（话只讲了一半），不要勉强总结，将其原封不动放在 LEFTOVER 标记中。
+
+**时间戳硬性约束（违反会导致笔记错乱）：**
+- 本段音频从 ${batchStartStr} 开始，每个 timestamp 都必须 ≥ ${batchStartStr}。
+- timestamp 必须与输入中该知识点首行方括号里的时间**完全一致**（原样照抄，不要改写格式，**绝对不要省略小时位**）。
+
+输出格式（严格使用以下行首标记，每行一个字段，不要使用 JSON）：
+===SEGMENT===
+timestamp: 照抄输入中该考点/题型首行方括号里的时间（含小时位，原样复制）
+title: 具体考点名称 或 题型方法/技巧名称（禁止出现“例题X.X”字样）
+key_points:
+- **核心考点/公式** 详细阐述定义条件、标准公式与适用范围（重点概念用 ** 加粗）
+- **破题信号与技巧** 见到何种式子特征 ➔ 采取何种变形或大招步骤（可自由使用 Markdown 缩进子列表、### 子标题组织）
+- **典型母题特征** （可选，仅限一行概括母题结构与破题切入点，不含具体计算过程）
+- **易错陷阱** 老师强调的禁忌与注意点
+===END===
+
+===LEFTOVER===
+这里放末尾被截断的原始转写片段（如果完整则留空）
+===END===
+
+**重要提示**：数学公式必须使用 LaTeX 语法，用行内 $...$ 包裹。
+
+### 待提取课堂片段
+${currentRaw}
+` : `
 目标：对转写文本进行**详细的知识提取与课堂原始记录**的整理，输出考研背诵级笔记。
 输入：这是一段课堂录音转写的片段（从约 ${batchStartStr} 开始，约 7 分钟）。输入中每行形如 [时间] 正文。
 输出：使用以下标记格式输出（不要输出 JSON，不要使用反引号或代码块）。
@@ -970,7 +1014,7 @@ ${currentRaw}
       const body: Record<string, any> = {
         model: provider.MODEL,
         messages: [
-          { role: "system", content: "You are a professional lecture note-taker. Your task is to extract detailed knowledge points from classroom transcripts and organize them into structured notes. 输出要求：1. 每个知识点都要详细记录推导过程、定义条件、关键结论，不能遗漏任何专业知识信息；2. key_points 要有可以拿去背诵的实质内容，不要只写概括性描述；3. 数学公式使用 LaTeX 语法用 $...$ 包裹；4. 使用中文输出，专业术语可保留英文。不要输出 JSON，使用 ===SEGMENT=== 标记格式。" },
+          { role: "system", content: isExamPoints ? "You are an expert postgraduate math exam (Kaoyan Math) point & technique extractor. Extract ONLY core exam points, theorem formulas, problem-solving signals, general techniques/tricks, pitfalls, and at most a one-line archetype feature. NEVER include step-by-step arithmetic or calculation processes of specific example problems. Use LaTeX $...$ for math. Output in Chinese using ===SEGMENT=== format." : "You are a professional lecture note-taker. Your task is to extract detailed knowledge points from classroom transcripts and organize them into structured notes. 输出要求：1. 每个知识点都要详细记录推导过程、定义条件、关键结论，不能遗漏任何专业知识信息；2. key_points 要有可以拿去背诵的实质内容，不要只写概括性描述；3. 数学公式使用 LaTeX 语法用 $...$ 包裹；4. 使用中文输出，专业术语可保留英文。不要输出 JSON，使用 ===SEGMENT=== 标记格式。" },
           { role: "user", content: prompt }
         ],
         stream: false,
@@ -1040,20 +1084,22 @@ ${currentRaw}
  * @returns 修正后的所有章节总结
  */
 export async function getGlobalCorrectionSummary(
-    preliminarySummaries: string
+    preliminarySummaries: string,
+    mode: TranscribeMode = 'standard'
 ): Promise<GlobalCorrectionResult> {
+    const isExamPoints = mode === 'exam_points';
     const prompt = `
-目标：基于所有分片的初步笔记，进行**块间微调**，不压缩信息，不重写块内内容。
-输入：由分块阶段生成的详细知识点笔记（含 key_points）。
+目标：基于所有分片的初步笔记，进行**块间微调**，${isExamPoints ? '构建结构严密的【二轮考点与题型方法论】讲义，剔除残余的具体例题演算步骤' : '不压缩信息，不重写块内内容'}。
+输入：由分块阶段生成的知识点笔记（含 key_points）。
 输出：微调后的最终知识结构（使用标记格式，不要输出 JSON）。
 
 **核心要求：**
-1. **块内内容尽量不修改**：分块阶段已经做得很好了，你不要重写或压缩 key_points 的内容。保留原始的推导步骤、定义、例题题意、公式等。只允许在格式上做微调（如调整加粗体位置）。
+1. **${isExamPoints ? '纯考点与技巧导向（严禁例题算草）' : '块内内容尽量不修改'}**：${isExamPoints ? '保留所有核心定义、定理公式、题型破题信号、解题技巧大招、一行母题特征与易错点；如果某些块内仍残留某道具体例题的一步步算式推导过程，请将其清洗为通用方法论，并将纯例题块合并入对应的考点/题型块中。章节 title 严禁出现“例题X.X”字样。' : '分块阶段已经做得很好了，你不要重写或压缩 key_points 的内容。保留原始的推导步骤、定义、例题题意、公式等。只允许在格式上做微调（如调整加粗体位置）。'}
 2. **加粗体格式（强制执行）**：每个 key_point 里面必须有加粗体（用两个星号 ** 包裹）。加粗体的作用是让读者扫一眼就能快速了解这个要点的核心逻辑。加粗体相当于序号的作用，替代序号。如果原内容已有加粗体，保留；如果没有，添加。**重要**：除了开头的核心词加粗外，内容中老师强调的重点概念、关键结论、易错点等也要用 ** 加粗，让读者快速抓住重点。例如："考试中题目**不会提示**这是反常积分"、"必须**取极限**而不是直接代入"。
-3. **块间合并**：如果两个相邻的块明显讲的是同一个知识点的上下半部分（被时间切片硬性切断），就合并成一个块。合并时保留两块的所有 key_points，不压缩。
+3. **块间合并**：如果两个相邻的块明显讲的是同一个知识点的上下半部分（被时间切片硬性切断）${isExamPoints ? '，或者后一个块只是前一个考点的配套例题演示' : ''}，就合并成一个块。
 4. **块间拆分**：如果一个块里明显揉了两个不同知识点，拆分成两个块。
-5. **标题调整**：把控全局统一性，让各块标题逻辑一致、风格统一。因为分块时各自为战，标题可能不一致。
-6. **块数量优化**：如果感觉分块太多或太婆嗦，可以适当合并。但不要为了减少数量而压缩内容。
+5. **标题调整**：把控全局统一性，让各块标题逻辑一致、风格统一${isExamPoints ? '（统一为考点名、题型名或解题方法名，修正如“三向解题法”等专业术语）' : ''}。
+6. **块数量优化**：如果感觉分块太多或太啰嗦，可以适当合并。
 7. **保留公式定理**：所有数学公式必须使用 LaTeX 语法，用行内 $...$ 包裹。
 8. **时间顺序**：按时间戳从小到大排列，保留原始时间戳。
 9. **块内结构化**：保留分块阶段已有的 Markdown 结构（缩进子列表、序号、子标题等）。如果原内容是平面的但逻辑上有层次，可以适当补充。
@@ -1482,16 +1528,62 @@ export async function generateMindmapContent(
     chapters: ChapterSummary[],
     noteFile: TFile,
     app: App,
-    customRequirements?: string
+    customRequirements?: string,
+    mode: TranscribeMode = 'standard'
 ): Promise<string> {
     // 从笔记文件名中提取视频名（去掉 "📝" 前缀）
     const videoName = noteFile.basename.replace(/^📝/, '');
     // 编码文件路径用于后续本地替换
     const encodedNotePath = encodeURIComponent(noteFile.path);
+    const isExamPoints = mode === 'exam_points';
 
-    // 💡 改进：大幅简化 Prompt，只要求输出干净的 [MM:SS] 标记
-    // 注意：不再传入完整笔记原文（noteContent），只用 key_points，避免 prompt 过长触发内容过滤
-    const prompt = `
+    const prompt = isExamPoints ? `
+你是一位**考研数学二轮强化·考点与题型方法论架构师**。请根据以下章节数据，为名为 \`${videoName}\` 的笔记构建一个**纯粹聚焦“核心考点、题型破题信号与解题技巧”**的二轮复习思维导图。
+
+## 🎯 二轮考点导图核心铁律（最高优先级，严格执行）
+1. **彻底剔除例题过程与例题节点（最关键）**：
+   - 思维导图中**绝对禁止**出现“例题1.1”、“例1.8应用”、“变限积分综合例题”、“差化积具体演示”、“题目具体推导过程”等任何具体例题名称或算题步骤节点！
+   - 如果输入数据中包含具体例题的讲解或演算步骤，你必须**抽离出它背后的通用考点、题型破题信号或解题技巧**；若该例题极具代表性，最多只能在技巧节点下用**一行子节点**简写\`母题特征：形如...的结构\`，**严禁把具体题目的分步通分、求导、代入求值过程写进导图**！
+2. **四大黄金维度构建知识树**：
+   - **考点与公式定理**：核心定义、充要条件、标准公式（行内 LaTeX \`$...$\`）、隐含结论体系；
+   - **题型与破题信号**：明确写出“**见到 [何种式子结构/特征] ➔ 锁定 [何种处理方法/转化方向]**”；
+   - **老师独门技巧与套路**：如恒等变形构造单位元（$1=a/a, 0=a-a$）、先算并提取干扰项、带头大哥同号性、和差化积三大手段（提公因式凑减1 / 拉格朗日中值定理）、脱帽法与戴帽法、移花接木等；
+   - **易错陷阱与适用禁忌**：如洛必达法则失效场景（周期函数/振荡项）、等价无穷小替换禁忌（对数 $\\ln x$ 在 $x\\to 0^+$ 非无穷小）、开区间有界性三段论不可逆等。
+3. **专业术语静默纠偏**：
+   - 自动修正语音识别同音错字（如将“三项解题法”修正为“**三向解题法**”，准确使用“海涅定理”、“施笃兹公式(Stolz)”、“拉格朗日中值定理”、“泰勒公式”、“带头大哥”等标准术语）。
+4. **章节跳转标记规则（严格遵守）**：
+   - 引用具体章节时，必须且只能使用 \`### [时间戳] 标题\` 的格式作为三级节点（挂在 \`## \` 二级大考点板块下）。**绝对不要生成任何 HTML、链接或代码块！**
+   - 🔴 **链接节点标题规则**：\`### [MM:SS] 标题\` 中的标题必须是 **2-8字的凝练考点名或题型技巧名**（如 \`### [09:19] 振荡项单位元法\`、\`### [21:00] 换元与提干扰项\`），**严禁包含“例题”、“演示”等字眼**！
+   - 如果输入中有某个章节完全是前面考点的纯算题演示且无新考点，可将其提炼出的技巧并入对应考点，无需为纯算题过程单独建分支。
+
+## 输出格式示例（严格参照此二轮考点风格）
+# ${videoName}
+## 🎯未定式判定与幂指规则
+### [04:53] 七种未定式与划归
+- 核心方法论：三向解题法（锁定目标 ➔ 把握思路 ➔ 处理细节）
+- 划归经典形式：通过恒等变形（$1=a/a, 0=a-a$）将陌生形式转化为三大常规工具（洛必达/等价替换/泰勒）
+### [07:33] 幂指函数极限规则
+- $1^\\infty$ 型未定式：$\\lim u^v = e^{\\lim v(u-1)}$（底趋于1且指数趋于无穷，缺一不可）
+- 一般幂指规则（非未定式）：底 $u \\to a (>0)$ 且指数极限 $b$ 存在时直接得 $a^b$
+### [09:19] 振荡项单位元构造法
+- 破题信号：指数或因子含 $(-1)^n, \\sin n, \\cos n$ 等有界但极限不存在的振荡项
+- 核心技巧：乘除单位元 $\\frac{n}{n}$ 拆为 $n \\cdot \\frac{(-1)^n}{n}$，人为制造 $\\infty$ 凑 $1^\\infty$ 型，再用“无穷小 $\\times$ 有界 $= 0$”消去振荡
+## 📐大题化简与干扰项策略
+### [21:00] 换元法与提干扰项
+- 换元规范：平移换元（$x-x_0=t$ 统一归零）与倒代换（$x=1/t$ 注意方向）
+- 干扰项提取大招：先单独算出极限为非零常数的繁杂分式（如 $\\frac{\\int_0^x \\sin t/t dt}{x} \\to 1$）并从原式剥离，忌直接暴力通分
+  - 母题特征：形如 $\\lim [\\frac{1}{x} - \\frac{\\int_0^x \\sin t/t dt}{x\\ln(1+x)}]$ 的 $\\infty-\\infty$ 型
+
+---
+## 章节结构数据（请提炼为纯考点与题型技巧导图，彻底过滤例题具体演算过程）
+${chapters.map(c => {
+  const detail = c.key_points 
+    ? c.key_points.map(kp => `  - ${kp}`).join('\n')
+    : c.summary;
+  return `[${c.timestamp}] ${c.title}\n${detail}`;
+}).join('\n\n')}
+${customRequirements && customRequirements.trim() ? `\n## 💡 用户增添的特别生成要求（最高优先级，严格遵循）\n${customRequirements.trim()}\n` : ''}
+` : `
 你是一位**知识体系架构师**。请根据以下视频章节数据，为名为 \`${videoName}\` 的笔记构建一个**逻辑清晰、结构化**的思维导图。
 
 ## 核心任务与定位
@@ -1549,7 +1641,7 @@ ${chapters.map(c => {
 }).join('\n\n')}
 ${customRequirements && customRequirements.trim() ? `\n## 💡 用户增添的特别生成要求（最高优先级，严格遵循）\n${customRequirements.trim()}\n` : ''}
 `;
-    const raw = await requestMindmapLLMText(prompt, '思维导图');
+    const raw = await requestMindmapLLMText(prompt, isExamPoints ? '二轮考点导图' : '思维导图');
 
     // 🛡️ content_filter 或空数据 → 降级构建简化版思维导图
     if (raw.hadContentFilter) {
@@ -1577,13 +1669,15 @@ export async function generatePartialMindmapContent(
     noteFile: TFile,
     existingOutline: string,
     chunkLabel: string,
-    customRequirements?: string
+    customRequirements?: string,
+    mode: TranscribeMode = 'standard'
 ): Promise<string> {
     const videoName = noteFile.basename.replace(/^📝/, '');
     const encodedNotePath = encodeURIComponent(noteFile.path);
+    const isExamPoints = mode === 'exam_points';
 
     const prompt = `
-你是一位**知识体系架构师**。请为笔记 \`${videoName}\` 的**局部内容**（${chunkLabel}）生成一段**局部思维导图分支**，稍后会被追加到已有思维导图的末尾。
+你是一位**${isExamPoints ? '考研数学二轮强化·考点与题型方法论架构师' : '知识体系架构师'}**。请为笔记 \`${videoName}\` 的**局部内容**（${chunkLabel}）生成一段**局部思维导图分支**，稍后会被追加到已有思维导图的末尾。
 
 ## 现有思维导图骨架（命名风格与分类粒度参考；不要重复其中已有的内容）
 ${existingOutline || '（暂无骨架，可自由组织）'}
@@ -1599,23 +1693,23 @@ ${chapters.map(c => {
 ## 输出要求（严格遵守）
 1. 只输出 **二级分支**（以 \`## \` 开头），**不要输出根节点标题（\`# \`）**，不要输出任何解释性文字。
 2. 分支数量 1~3 条：所选内容属于同一主题时输出 1 条；确实跨主题时按逻辑拆成多条。分支命名可呼应骨架的命名风格（如 emoji 前缀、粒度），但不要与现有分支完全同名；命名要能概括该组内容。
-3. 具体章节必须使用 \`### [时间戳] 标题\` 格式（时间戳沿用数据中的 [MM:SS]；标题为 2-8 字凝练概括）。
+3. 具体章节必须使用 \`### [时间戳] 标题\` 格式（时间戳沿用数据中的 [MM:SS]；标题为 2-8 字凝练概括${isExamPoints ? '，严禁出现“例题X.X”、“演示”等字眼，必须用考点名或技巧名' : ''}）。
 4. \`### [时间戳]\` 节点下用 \`- \` 列表展开要点，最多再嵌套一层缩进（两个空格 + \`- \`）。
-5. 数学公式使用行内 LaTeX（$...$ 包裹）；静默修正语音识别错别字。
+5. 数学公式使用行内 LaTeX（$...$ 包裹）；静默修正语音识别错别字（如“三向解题法”）。
 6. 不要输出 HTML、链接或代码块。
-7. 尊重原始章节切分，不要把不同知识点合并进同一个叶子节点。
+${isExamPoints ? '7. **二轮考点过滤铁律**：彻底剔除具体例题的分步计算推导过程！只提炼核心考点、定理公式、题型破题信号、老师总结的解题技巧/大招与易错陷阱（典型例题最多仅用一行简写“母题特征”）。' : '7. 尊重原始章节切分，不要把不同知识点合并进同一个叶子节点。'}
 
 ## 输出格式示例（严格参照）
 ## 📦 局部：体积公式推导
 ### [00:03] 旋转体定义
 - 核心定义
   - 曲线绕轴旋转所扫出的立体
-### [04:42] 例题10.5
+### [04:42] ${isExamPoints ? '根式定义域陷阱' : '例题10.5'}
 - 定义域陷阱
   - $\\sqrt{\\sin x}$ 要求 $\\sin x \\ge 0$
 ${customRequirements && customRequirements.trim() ? `\n## 💡 用户增添的特别生成要求（最高优先级，严格遵循）\n${customRequirements.trim()}\n` : ''}
 `;
-    const raw = await requestMindmapLLMText(prompt, '局部思维导图');
+    const raw = await requestMindmapLLMText(prompt, isExamPoints ? '局部考点导图' : '局部思维导图');
     if (raw.hadContentFilter) {
         throw new Error('内容被模型 content_filter 拦截，请调整所选分块后重试');
     }

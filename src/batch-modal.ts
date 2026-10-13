@@ -7,6 +7,7 @@ import { App, Modal, TFile, TFolder, Notice } from 'obsidian';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSupportedMediaExtension, calculateNotePaths } from './utils';
+import { TranscribeMode } from './types';
 
 interface TreeNode {
     name: string;
@@ -24,14 +25,16 @@ export class BatchTranscribeModal extends Modal {
     private filterInput: HTMLInputElement;
     private treeContainer: HTMLDivElement;
     private startBtn: HTMLButtonElement;
-    private onConfirm: (files: TFile[]) => void;
+    private onConfirm: (files: TFile[], mode: TranscribeMode) => void;
     private showOnlyUntranscribed = false;
     private collapsedPaths: Set<string> = new Set();
     private initialized = false;
+    private selectedMode: TranscribeMode = 'standard';
 
-    constructor(app: App, onConfirm: (files: TFile[]) => void) {
+    constructor(app: App, onConfirm: (files: TFile[], mode: TranscribeMode) => void, initialMode: TranscribeMode = 'standard') {
         super(app);
         this.onConfirm = onConfirm;
+        this.selectedMode = initialMode;
     }
 
     private injectStyles() {
@@ -46,6 +49,9 @@ export class BatchTranscribeModal extends Modal {
 .batch-transcribe-modal .bt-tag-done { color: var(--color-green); }
 .batch-transcribe-modal .bt-tag-pending { color: var(--color-orange); }
 .batch-transcribe-modal .bt-toolbar { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.batch-transcribe-modal .bt-mode-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.batch-transcribe-modal .bt-mode-label { font-weight: 600; font-size: 0.9em; white-space: nowrap; }
+.batch-transcribe-modal .bt-mode-desc { font-size: 0.8em; color: var(--text-muted); margin-left: auto; }
 .batch-transcribe-modal .bt-search { flex: 1; min-width: 200px; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); }
 .batch-transcribe-modal .bt-btn { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); cursor: pointer; font-size: 0.85em; white-space: nowrap; }
 .batch-transcribe-modal .bt-btn:hover { background: var(--background-modifier-hover); }
@@ -93,6 +99,40 @@ export class BatchTranscribeModal extends Modal {
         stats.createEl('span', { text: `已转写 ${transcribed}`, cls: 'bt-tag-done' });
         stats.createEl('span', { text: `未转写 ${this.allMediaFiles.length - transcribed}`, cls: 'bt-tag-pending' });
 
+
+        // ── 转写模式切换栏 ──
+        const modeBar = contentEl.createDiv({ cls: 'bt-mode-bar' });
+        modeBar.createEl('span', { text: '🎯 转写与导图模式：', cls: 'bt-mode-label' });
+        const btnModeStandard = modeBar.createEl('button', {
+            text: '📝 常规全量模式',
+            cls: `bt-btn ${this.selectedMode === 'standard' ? 'is-active' : ''}`
+        });
+        const btnModeExam = modeBar.createEl('button', {
+            text: '🎯 二轮考点模式（数学强化）',
+            cls: `bt-btn ${this.selectedMode === 'exam_points' ? 'is-active' : ''}`
+        });
+        const modeDescEl = modeBar.createEl('span', {
+            cls: 'bt-mode-desc',
+            text: this.selectedMode === 'exam_points'
+                ? '纯考点+题型技巧+一行母题特征（剔除例题演算过程）'
+                : '保留完整知识点推导与例题具体演算过程'
+        });
+
+        const updateModeUI = (newMode: TranscribeMode) => {
+            this.selectedMode = newMode;
+            btnModeStandard.classList.toggle('is-active', newMode === 'standard');
+            btnModeExam.classList.toggle('is-active', newMode === 'exam_points');
+            modeDescEl.textContent = newMode === 'exam_points'
+                ? '纯考点+题型技巧+一行母题特征（剔除例题演算过程）'
+                : '保留完整知识点推导与例题具体演算过程';
+            if (this.startBtn) {
+                this.startBtn.textContent = newMode === 'exam_points'
+                    ? '🎯 开始批量考点转写'
+                    : '🚀 开始批量转写';
+            }
+        };
+        btnModeStandard.onclick = () => updateModeUI('standard');
+        btnModeExam.onclick = () => updateModeUI('exam_points');
         // ── 工具栏 ──
         const toolbar = contentEl.createDiv({ cls: 'bt-toolbar' });
 
@@ -156,7 +196,7 @@ export class BatchTranscribeModal extends Modal {
         const countEl = footer.createEl('span', { cls: 'bt-count', text: '已选择 0 个' });
 
         this.startBtn = footer.createEl('button', {
-            text: '🚀 开始批量转写',
+            text: this.selectedMode === 'exam_points' ? '🎯 开始批量考点转写' : '🚀 开始批量转写',
             cls: 'mod-cta'
         });
         this.startBtn.disabled = true;
@@ -165,7 +205,7 @@ export class BatchTranscribeModal extends Modal {
                 new Notice('请至少选择一个文件');
                 return;
             }
-            this.onConfirm(Array.from(this.selectedFiles));
+            this.onConfirm(Array.from(this.selectedFiles), this.selectedMode);
             this.close();
         };
 

@@ -612,3 +612,18 @@
 
 3. **应用内实测 (CDP)**:
    - 在运行中的 Obsidian 内对真实智能笔记 `📝01 写作功能句1-5.md` 进行实测，验证弹窗成功打开、章节统计准确（18个章节）、新要求多行输入框渲染及取值正常，API 挂载健全。
+
+## [2026-10-13 14:20:00] feat(exam-points-mode): 新增「二轮考点转写（数学强化专用）」模式与纯考点思维导图生成体系
+
+1. **需求定位**:
+   - 保留原有常规全量转写模式（含完整知识点推导与例题具体演算过程）丝毫不变。
+   - 新增专为考研数学强化课（1~3小时合并大视频）设计的 `exam_points`（二轮考点转写）模式：彻底剔除例题分步计算推导流水账，专门整理**核心考点定理、题型破题信号、老师总结的解题技巧/大招、易错陷阱与一行典型母题特征**，保留底部折叠 `📜 原文` 供回溯。
+   - 配套生成的 Rich 思维导图同步切换为“纯考点与题型方法论架构师”模式，严禁出现“例题X.X”节点，内置张宇18讲/36讲高频术语静默纠偏（如“三向解题法”、“海涅定理”、“施笃兹公式”、“带头大哥”、“脱帽法/戴帽法”等）。
+
+2. **全链路改造**:
+   - `src/types.ts`: 新增 `TranscribeMode = 'standard' | 'exam_points'`。
+   - `src/llm.ts`: `getBatchSummary`、`getGlobalCorrectionSummary`、`generateMindmapContent`、`generatePartialMindmapContent` 全面支持 `mode: TranscribeMode` 双轨 Prompt。
+   - `src/batch-modal.ts`: 批量转写弹窗顶部新增「📝 常规全量模式 / 🎯 二轮考点模式（数学强化）」切换栏。
+   - `src/mindmap-migrate-modal.ts` & `src/partial-mindmap.ts`: 重生成思维导图弹窗与局部导图弹窗均支持一键切换至「🎯 二轮纯考点与题型技巧模式」（已转写好的旧版常规笔记也可直接清洗重生成为纯考点导图）。
+   - `main.ts`: 注册独立命令 `🎯 二轮考点转写（数学强化：纯考点+题型技巧，无例题过程）` (`transcribe-exam-points-mode`)，并在任务队列与断点续跑 (`TranscribeCheckpoint`) 中持久化 `mode`。
+   - `.gitignore`: 升级为 `data.json*` 与 `secrets.json*`，确保用户本地 API Key 配置与备份文件绝对安全。

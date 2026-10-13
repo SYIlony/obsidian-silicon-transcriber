@@ -1,4 +1,4 @@
-secrets.json
+secrets.json*
 ffmpeg.exe
 node_modules/
 *.log
@@ -7,4 +7,4 @@ repair-missing.log
 .fix-tasks/
 .backup-timestamp-fix-20260921/
 checkpoints/
-data.json
+data.json*
