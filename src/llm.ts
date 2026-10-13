@@ -23,6 +23,14 @@ export function resolveTextbookReference(filePathOrName: string, app?: App): str
         const lectureNum = parseInt(m[1], 10);
         const targetPrefix = `第${lectureNum}讲`;
 
+        // 自动识别科目（线代 / 概率 / 默认高数）
+        let subjectPrefix = '';
+        if (/线代|线性代数/.test(filePathOrName)) {
+            subjectPrefix = '线代_';
+        } else if (/概率|数理统计/.test(filePathOrName)) {
+            subjectPrefix = '概率_';
+        }
+
         const candidateDirs: string[] = [
             'C:/Obsidian_Hub/Quick_Mark/Z_27数学/_强化36讲/_课本参考',
             'Z:/Z_27数学/_强化36讲/_课本参考'
@@ -35,13 +43,17 @@ export function resolveTextbookReference(filePathOrName: string, app?: App): str
         for (const dir of candidateDirs) {
             if (!fs.existsSync(dir)) continue;
             const files = fs.readdirSync(dir);
-            const matched = files.find(f => f.endsWith('.md') && (f.startsWith(`${targetPrefix}_`) || f.startsWith(`${targetPrefix} `) || f.includes(`${targetPrefix}_`)));
+            const exactPrefix = `${subjectPrefix}${targetPrefix}`;
+            let matched = files.find(f => f.endsWith('.md') && (f.startsWith(`${exactPrefix}_`) || f.startsWith(`${exactPrefix} `) || f === `${exactPrefix}.md`));
+            if (!matched && !subjectPrefix) {
+                matched = files.find(f => f.endsWith('.md') && !f.startsWith('线代_') && !f.startsWith('概率_') && (f.startsWith(`${targetPrefix}_`) || f.includes(`${targetPrefix}_`)));
+            }
             if (matched) {
                 const fullPath = path.join(dir, matched);
                 const text = fs.readFileSync(fullPath, 'utf8').trim();
                 if (text.length > 0) {
                     console.log(`📚 [课本依据] 已自动匹配并加载课本参考: ${fullPath} (${text.length} 字符)`);
-                    return text.slice(0, 22000);
+                    return text.slice(0, 24000);
                 }
             }
         }

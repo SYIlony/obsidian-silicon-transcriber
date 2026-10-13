@@ -1378,6 +1378,12 @@ function resolveTextbookReference(filePathOrName, app) {
       return "";
     const lectureNum = parseInt(m[1], 10);
     const targetPrefix = `\u7B2C${lectureNum}\u8BB2`;
+    let subjectPrefix = "";
+    if (/线代|线性代数/.test(filePathOrName)) {
+      subjectPrefix = "\u7EBF\u4EE3_";
+    } else if (/概率|数理统计/.test(filePathOrName)) {
+      subjectPrefix = "\u6982\u7387_";
+    }
     const candidateDirs = [
       "C:/Obsidian_Hub/Quick_Mark/Z_27\u6570\u5B66/_\u5F3A\u531636\u8BB2/_\u8BFE\u672C\u53C2\u8003",
       "Z:/Z_27\u6570\u5B66/_\u5F3A\u531636\u8BB2/_\u8BFE\u672C\u53C2\u8003"
@@ -1390,13 +1396,17 @@ function resolveTextbookReference(filePathOrName, app) {
       if (!fs.existsSync(dir))
         continue;
       const files = fs.readdirSync(dir);
-      const matched = files.find((f) => f.endsWith(".md") && (f.startsWith(`${targetPrefix}_`) || f.startsWith(`${targetPrefix} `) || f.includes(`${targetPrefix}_`)));
+      const exactPrefix = `${subjectPrefix}${targetPrefix}`;
+      let matched = files.find((f) => f.endsWith(".md") && (f.startsWith(`${exactPrefix}_`) || f.startsWith(`${exactPrefix} `) || f === `${exactPrefix}.md`));
+      if (!matched && !subjectPrefix) {
+        matched = files.find((f) => f.endsWith(".md") && !f.startsWith("\u7EBF\u4EE3_") && !f.startsWith("\u6982\u7387_") && (f.startsWith(`${targetPrefix}_`) || f.includes(`${targetPrefix}_`)));
+      }
       if (matched) {
         const fullPath = path.join(dir, matched);
         const text = fs.readFileSync(fullPath, "utf8").trim();
         if (text.length > 0) {
           console.log(`\u{1F4DA} [\u8BFE\u672C\u4F9D\u636E] \u5DF2\u81EA\u52A8\u5339\u914D\u5E76\u52A0\u8F7D\u8BFE\u672C\u53C2\u8003: ${fullPath} (${text.length} \u5B57\u7B26)`);
-          return text.slice(0, 22e3);
+          return text.slice(0, 24e3);
         }
       }
     }
